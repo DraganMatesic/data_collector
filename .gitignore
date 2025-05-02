@@ -1,0 +1,12 @@
+.idea/
+tests/
+__pycache__/
+data_collector.egg-info/
+dist/
+build/
+data_collector/__pycache__/
+data_collector/examples/__pycache__/
+System Volume Information/
+data_collector/serbia/nbs/bills_of_exchange/images
+.env
+install.bat

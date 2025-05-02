@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data_collector"
+version = "0.0.1"
+description = "data collector from web pages and API's"
+readme = "README.md"
+requires-python = ">=3.7"
+license = "MIT"
+authors = [
+    { name = "Dragan Matesic" }
+]
+
+dependencies = [
+    "sqlalchemy",
+    "psycopg2",
+    "python-dotenv",
+    "line_profiler",
+    "pika",
+    "requests",
+    "bs4",
+    "lxml",
+    "python-dateutil",
+    "pandas",
+    "cx_Oracle",
+    "html5lib",
+    "pymssql"
+]
+
+[tool.setuptools]
+include-package-data = true
+zip-safe = false
+
+[tool.setuptools.package-data]
+# Optional: include data files in your package
+# "your_package_name" = ["data/*.txt", "config/*.json"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests"]
