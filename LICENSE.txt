@@ -1,0 +1,19 @@
+Custom License for data_collector
+Copyright (c) 2025 Dragan Matešić
+
+Permission is granted to individuals and organizations to use this software
+for personal, educational, or internal research purposes, provided that this
+notice and the name of the author are retained in all copies.
+
+Commercial use, including but not limited to inclusion in proprietary software,
+products, or services intended for sale or profit, is strictly prohibited without
+a valid commercial license obtained from the author.
+
+Modification, redistribution, or sublicensing of this software or any of its
+derivative works is not permitted without the explicit written consent of the author.
+
+This software is provided "as-is", without warranty of any kind, express or implied.
+In no event shall the author be liable for any claim, damages, or other liability
+arising from the use of this software.
+
+To inquire about commercial licensing, contact: 32225602+DraganMatesic@users.noreply.github.com

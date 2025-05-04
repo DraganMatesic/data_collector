@@ -3,13 +3,13 @@ import dotenv
 import hashlib
 from pathlib import Path
 from datetime import datetime
-from data_collector.utilities import functions
+from data_collector.utilities.functions import runtime
 
 
 def check(logger, extra=None, idx=0):
     # code block necessary for standalone function
     start_time = datetime.now()
-    extra = functions.make_extra(__file__, extra=extra, function_name='check')
+    extra = runtime.make_extra(__file__, extra=extra, function_name='check')
     extra.update({'start_time': start_time, 'function_no': idx})
     logger.info('executing check', extra=extra)
 
@@ -25,5 +25,5 @@ def check(logger, extra=None, idx=0):
         logger.debug('dcload environment variable exists - load O.K', extra=extra)
 
     # code block necessary for standalone function ending
-    extra.update(functions.function_end(start_time))
+    extra.update(runtime.function_end(start_time))
     logger.info('finished executing check', extra=extra)
