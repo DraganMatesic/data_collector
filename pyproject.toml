@@ -4,18 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "data_collector"
-version = "0.0.1"
-description = "data collector from web pages and API's"
+version = "0.1.0"
+description = "Framework for collecting data from webpages, API's, documents, free for non-commercial use"
 readme = "README.md"
 requires-python = ">=3.7"
-license = "MIT"
-authors = [
-    { name = "Dragan Matesic" }
+license = { file = "LICENSE.txt" }
+authors = [{ name = "Dragan Matesic" , email="32225602+DraganMatesic@users.noreply.github.com"}]
+classifiers = [
+    "License :: Other/Proprietary License",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Application Frameworks"
 ]
 
+
+
 dependencies = [
+    "psycopg2-binary",
     "sqlalchemy",
-    "psycopg2",
     "python-dotenv",
     "line_profiler",
     "pika",
@@ -24,9 +32,7 @@ dependencies = [
     "lxml",
     "python-dateutil",
     "pandas",
-    "cx_Oracle",
     "html5lib",
-    "pymssql"
 ]
 
 [tool.setuptools]
