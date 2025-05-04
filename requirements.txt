@@ -9,3 +9,4 @@ lxml
 python-dateutil
 pandas
 html5lib
+pydantic-settings
