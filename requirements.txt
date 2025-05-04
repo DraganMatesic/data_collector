@@ -1,0 +1,11 @@
+psycopg2-binary
+sqlalchemy
+python-dotenv
+line_profiler
+pika
+requests
+bs4
+lxml
+python-dateutil
+pandas
+html5lib
