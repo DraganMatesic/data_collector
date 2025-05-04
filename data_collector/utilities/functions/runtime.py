@@ -7,6 +7,7 @@ import logging
 import hashlib
 import importlib
 from datetime import datetime
+from typing import Optional, List, Union, Tuple
 from data_collector.utilities.functions import math
 from data_collector.utilities.functions import converters
 
@@ -221,3 +222,87 @@ def setup_logger(name: str = 'my_logger', level=logging.INFO) -> logging.Logger:
         logger.addHandler(stream_handler)
 
     return logger
+
+
+def obj_diff(
+    new_objs,
+    existing_objs,
+    compare_key: Union[str, List[str], Tuple[str, ...]] = 'sha',
+    logger=None
+):
+    """
+    Compares new and existing SQLAlchemy objects using a single or composite key.
+
+    Args:
+        new_objs: List of new ORM objects (e.g., from web).
+        existing_objs: List of current DB ORM objects.
+        compare_key: One or more attribute names (str or list/tuple of str) used to uniquely identify each object.
+        logger: Optional logger to warn about duplicates.
+
+    Returns:
+        to_insert: objects in new_objs but not in existing_objs
+        to_remove: objects in existing_objs but not in new_objs
+    """
+
+    def get_key(obj):
+        if isinstance(compare_key, (list, tuple)):
+            return tuple(getattr(obj, key) for key in compare_key)
+        return getattr(obj, compare_key)
+
+    new_map = {}
+    for obj in new_objs:
+        key = get_key(obj)
+        if key in new_map and logger:
+            logger.warning(f"Duplicate key in new_objs: {key}")
+        new_map[key] = obj
+
+    existing_map = {}
+    for obj in existing_objs:
+        key = get_key(obj)
+        if key in existing_map and logger:
+            logger.warning(f"Duplicate key in existing_objs: {key}")
+        existing_map[key] = obj
+
+    to_insert = [obj for k, obj in new_map.items() if k not in existing_map]
+    to_remove = [obj for k, obj in existing_map.items() if k not in new_map]
+
+    return to_insert, to_remove
+
+
+def make_hash(
+    data: Union[dict, str, object],
+    constructor: Optional[str] = 'sha3_256',
+    on_keys: Optional[List[str]] = None,
+    sort_keys: bool = True
+) -> str:
+    """
+    Creates a hash value from provided data.
+
+    Args:
+        data: Any input — string, object, or dictionary.
+        constructor: Name of the hash function to use (default: 'sha3_256').
+        on_keys: If data is a dict, hash only these keys (optional).
+        sort_keys: Whether to sort dictionary keys before hashing (default: True).
+
+    Returns:
+        Hexadecimal string representing the hash.
+
+    Raises:
+        ValueError: If the constructor is invalid or not callable.
+    """
+    if constructor not in hashlib.algorithms_available:
+        raise ValueError(f"Hash constructor '{constructor}' is not available in hashlib.")
+
+    hash_func = getattr(hashlib, constructor, None)
+    if not callable(hash_func):
+        raise ValueError(f"Hash function '{constructor}' is not callable or not found in hashlib.")
+
+    # If dict, optionally reduce to specific keys and sort for stable hash
+    if isinstance(data, dict):
+        if on_keys:
+            data = {k: data[k] for k in on_keys if k in data}
+        if sort_keys:
+            # Sorting both keys and nested values for deep consistency
+            data = dict(sorted(data.items(), key=lambda item: item[0]))
+
+    return hash_func(str(data).encode()).hexdigest()
