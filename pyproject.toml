@@ -33,6 +33,7 @@ dependencies = [
     "python-dateutil",
     "pandas",
     "html5lib",
+    "cryptography"
 ]
 
 [tool.setuptools]

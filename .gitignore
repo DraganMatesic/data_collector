@@ -9,4 +9,4 @@ data_collector/examples/__pycache__/
 System Volume Information/
 data_collector/serbia/nbs/bills_of_exchange/images
 .env
-install.bat
+*.env
