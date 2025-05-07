@@ -1,0 +1,118 @@
+# 📦 Secret Loader Documentation
+
+`secret_loader.py` is designed for use on personal development machines where GitHub CI/CD 
+pipelines cannot safely set permanent environment variables. 
+This script allows you to decrypt GitHub Secrets and write them to your system’s environment.
+
+---
+
+## 🔐 What It Does
+
+- Downloads secrets from GitHub Actions as an encrypted `.zip` artifact
+- Decrypts the file using a password (AES-256)
+- Sets the secrets permanently as **user-level** environment variables:
+  - ✅ On **Windows**: stored in `HKEY_CURRENT_USER\Environment`
+  - ✅ On **Linux/macOS**: appended to `~/.bashrc` or compatible shell config file
+
+---
+
+## ⚙️ When to Use It
+
+Use this if:
+
+- You want to work privately with your secrets without pushing them to cloud services
+- You don’t want CI/CD to manage secrets automatically
+- You're running everything from a personal desktop/laptop and need local setup
+
+---
+
+## 🚀 How to Use
+
+### 1. Fork and Clone the Repository
+- Go to the GitHub page of this repository and click **Fork**
+- Clone your forked version locally:
+
+```bash
+git clone https://github.com/your-username/your-forked-repo.git
+```
+
+### 2. Set Up the Project Locally
+- Open the project in PyCharm or Visual Studio Code
+- Create a virtual environment and install dependencies:
+
+```bash
+python -m venv venv
+source venv/bin/activate  # or venv\Scripts\activate on Windows
+pip install -r requirements.txt
+```
+
+---
+
+### 3. Configure Secrets in Your Fork
+- Go to your forked GitHub repo: **Settings → Secrets and variables → Actions**
+- Click **New repository secret** and add each secret you want to load
+- Add a `DC_SECRET_PASSWORD` secret — this will be used for encryption/decryption
+
+### 4. Enable Workflows
+- Go to the **Actions** tab of your fork
+- Click **"I understand, enable workflows"**
+
+### 5. Adjust the GitHub Action
+- Open `.github/workflows/secrets_export.yml`
+- Add `echo` lines for each secret you'd like to export:
+
+```yaml
+run: |
+  echo "DB_USER=${{ secrets.DB_USER }}" >> secrets.env
+  echo "DB_PASS=${{ secrets.DB_PASS }}" >> secrets.env
+  echo "API_KEY=${{ secrets.API_KEY }}" >> secrets.env
+```
+
+### 6. Run the Export Workflow
+- Trigger the **Export GitHub Secrets to AES-Encrypted ENV** workflow
+- After it completes, download the artifact: `env-secrets-encrypted.zip`
+
+---
+
+### 7. Decrypt and Load Secrets Locally
+1. Unzip the artifact to get `secrets.env.enc`
+2. Open `secret_loader.py` in your IDE
+3. At the bottom of the file, set the path to your `.zip` file (if needed)
+4. Run the script:
+
+```bash
+python secret_loader.py
+```
+
+- The script will prompt for your decryption password or use the environment variable `DC_SECRET_PASSWORD`
+- Environment variables will be applied permanently to your system user
+- Restart your terminal or IDE to see the effects
+
+---
+
+## 🧪 Setup Requirements
+
+### 🐍 Python packages
+- `cryptography`
+
+---
+
+## ❗ Notes and Warnings
+
+- Windows registry changes take effect **only in new terminals** unless a system broadcast is triggered (done automatically)
+- Linux/macOS environment changes require restarting the terminal or running `source ~/.bashrc`
+- Secrets are **not** copied when a repo is forked — forked projects must define their own secrets
+
+---
+
+## 🧩 Troubleshooting
+
+- If no variables appear after running `secret_loader.py`, make sure:
+  - You used the correct decryption password
+  - You downloaded and extracted the correct zip
+  - You restarted your terminal after applying environment changes
+
+---
+
+## ✅ Done!
+After this setup, your environment will have all secrets from GitHub Actions available locally — securely and permanently.
