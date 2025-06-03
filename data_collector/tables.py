@@ -2,19 +2,17 @@ import logging
 
 from sqlalchemy import (
     Column, String, BigInteger, Sequence, ForeignKey, ForeignKeyConstraint,
-    Boolean, DateTime, Integer, Text, ARRAY, text
+    Boolean, DateTime, Integer, Text, ARRAY, text, func
 )
 
 from enum import IntEnum
 from dataclasses import dataclass, field
 from sqlalchemy.orm import (declarative_base, relationship)
 from data_collector.utilities.database import core
-
+from data_collector.settings.main import MainDatabaseSettings
 
 # Base class for all ORM models
 Base = declarative_base(cls=core.BaseModel)
-
-
 
 
 class RunStatus(IntEnum):
@@ -200,11 +198,39 @@ class Apps(Base):
     )
 
 
+class AppDbObjects(Base):
+    """
+    Contains mapped database objects that app uses
+    """
+    __tablename__ = 'app_db_objects'
+
+    # Auto-incrementing ID
+    id_seq = Sequence('app_db_objects_id_seq', metadata=Base.metadata)
+    id = Column(BigInteger, id_seq, server_default=id_seq.next_value(), primary_key=True)
+
+    # Application identifier unique hash value
+    app_id = Column(String(64), index=True, nullable=False)
+
+    # Data regarding db object
+    server_type = Column(String(50))
+    server_name  = Column(String(50))
+    server_ip = Column(String(50))
+    database_name = Column(String(50))
+    database_schema = Column(String(50))
+    object_name = Column(String(75))
+    object_type = Column(String(20))
+    last_use_date = Column(DateTime, comment="when the last time DDL action was done")
+    sha = Column(String(64), nullable=False, index=True)
+
+    archive = Column(DateTime, comment="data and time this database object was removed from usage")
+    date_created = Column(DateTime, server_default=func.now())  # DateCreated
+
+
 def create_tables():
     """
     Create or recreate table that manager.py depends on
     """
-    # Base.metadata.drop_all(database.engine)
+    Base.metadata.drop_all(database.engine)
     Base.metadata.create_all(database.engine)
 
 
@@ -213,48 +239,50 @@ def populate_tables():
     """
     Populate codebook data to created tables
     """
-    seed_data = list()
-    # populate data for cmd flags in manager.py
-    cmd_flags = [CodebookCommandFlags(id=CommandFlag.PENDING, description="Command pending"),
-                 CodebookCommandFlags(id=CommandFlag.EXECUTED, description="Command Executed"),
-                 CodebookCommandFlags(id=CommandFlag.NOT_EXECUTED, description="Command not executed, conditions not meet")]
-    seed_data.append(SeedData(data=cmd_flags, data_label="cmd_flags"))
+    with database.create_session() as session:
+        seed_data = list()
+        # populate data for cmd flags in manager.py
+        cmd_flags = [CodebookCommandFlags(id=CommandFlag.PENDING, description="Command pending"),
+                     CodebookCommandFlags(id=CommandFlag.EXECUTED, description="Command Executed"),
+                     CodebookCommandFlags(id=CommandFlag.NOT_EXECUTED, description="Command not executed, conditions not meet")]
+        seed_data.append(SeedData(data=cmd_flags, data_label="cmd_flags"))
 
 
-    # populate data for command list in manager.py
-    cmd_list = [CodebookCommandList(id=CommandList.START, name="start", description="Start app"),
-                CodebookCommandList(id=CommandList.STOP, name="stop", description="Stop app"),
-                CodebookCommandList(id=CommandList.RESTART, name="restart", description="Restart app"),
-                CodebookCommandList(id=CommandList.ENABLE, name="enable", description="Enable app"),
-                CodebookCommandList(id=CommandList.DISABLE, name="disable", description="Disable app"),
-                ]
-    seed_data.append(SeedData(data=cmd_list, data_label="cmd_list", compare_key=['id', 'name', 'description']))
+        # populate data for command list in manager.py
+        cmd_list = [CodebookCommandList(id=CommandList.START, name="start", description="Start app"),
+                    CodebookCommandList(id=CommandList.STOP, name="stop", description="Stop app"),
+                    CodebookCommandList(id=CommandList.RESTART, name="restart", description="Restart app"),
+                    CodebookCommandList(id=CommandList.ENABLE, name="enable", description="Enable app"),
+                    CodebookCommandList(id=CommandList.DISABLE, name="disable", description="Disable app"),
+                    ]
+        seed_data.append(SeedData(data=cmd_list, data_label="cmd_list", compare_key=['id', 'name', 'description']))
 
-    # populate data for fatal flags in manager.py
-    fatal_flags = [CodebookFatalFlags(id=FatalFlag.FAILED_TO_START, description="Failed to start"),
-                   CodebookFatalFlags(id=FatalFlag.ALERT_SENT, description="App stopped, alert sent"),
-                   CodebookFatalFlags(id=FatalFlag.UNEXPECTED_BEHAVIOR, description="Unexpected behaviour"),
-                   ]
-    seed_data.append(SeedData(data=fatal_flags, data_label="fatal_flags"))
+        # populate data for fatal flags in manager.py
+        fatal_flags = [CodebookFatalFlags(id=FatalFlag.FAILED_TO_START, description="Failed to start"),
+                       CodebookFatalFlags(id=FatalFlag.ALERT_SENT, description="App stopped, alert sent"),
+                       CodebookFatalFlags(id=FatalFlag.UNEXPECTED_BEHAVIOR, description="Unexpected behaviour"),
+                       ]
+        seed_data.append(SeedData(data=fatal_flags, data_label="fatal_flags"))
 
-    run_status = [CodebookRunStatus(id=RunStatus.NOT_RUNNING, description="App not running"),
-                  CodebookRunStatus(id=RunStatus.RUNNING, description="App is running"),
-                  CodebookRunStatus(id=RunStatus.STOPPED, description="App is stopped. Send command start or restart to start again."),
-                  ]
-    seed_data.append(SeedData(data=run_status, data_label="run_status"))
+        run_status = [CodebookRunStatus(id=RunStatus.NOT_RUNNING, description="App not running"),
+                      CodebookRunStatus(id=RunStatus.RUNNING, description="App is running"),
+                      CodebookRunStatus(id=RunStatus.STOPPED, description="App is stopped. Send command start or restart to start again."),
+                      ]
+        seed_data.append(SeedData(data=run_status, data_label="run_status"))
 
-    for sd in seed_data:
-        try:
-            database.merge(sd.data, delete=True, compare_key=sd.compare_key)
-        except Exception as e:
-            logger.error(f"Failed to populate {sd.data_label}: {e}")
+        for sd in seed_data:
+            try:
+                database.merge(sd.data, session, delete=True, compare_key=sd.compare_key)
+            except Exception as e:
+                logger.error(f"Failed to populate {sd.data_label}: {e}")
 
 
 if __name__ == '__main__':
     # used in development environment
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
-    database = core.Database('dcdb', logger, env_check=True)
+
+    database = core.Database(MainDatabaseSettings())
 
     # todo add in manager.py to check if tables are created and if not to create them before populating with data
     create_tables()
