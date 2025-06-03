@@ -1,46 +1,89 @@
 import os
+import re
+import warnings
 from enum import Enum
 from datetime import datetime
 from dataclasses import dataclass
+
+from sqlalchemy.orm import Session
 from abc import ABC, abstractmethod
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from data_collector.utilities import env
+from sqlalchemy.engine import CursorResult
+from pydantic_settings import BaseSettings
+from sqlalchemy.engine import Engine, Result
+from sqlalchemy.sql.elements import TextClause
 from sqlalchemy.ext.declarative import declared_attr
 from data_collector.utilities.functions import runtime
 from data_collector.utilities.database import loaders
+from data_collector.utilities.log import create_logger
+from typing import Optional, List, Union, Tuple, TypeVar, Type
+
+from sqlglot import parse_one
+from sqlglot.expressions import Table, Func
 
 from sqlalchemy import (
-    text, select, Column, String
+    text, select, Column, String, and_
 )
 
-class DatabaseDriver(str, Enum):
-    POSTGRES = 'psycopg2'
-    ORACLE = 'cx_oracle'
-    ODBC = 'pyodbc'
+from data_collector.settings.main import (DatabaseSettings,
+                                          DatabaseType,
+                                          AuthMethods,
+                                          DatabaseDriver,
+                                          MainDatabaseSettings)
 
-    @classmethod
-    def has_value(cls, value: str) -> bool:
-        return value in cls._value2member_map_
+T = TypeVar("T")
 
-
-class DatabaseType(Enum):
-    POSTGRES = "Postgres"
-    MSSQL = "MsSQL"
-    ORACLE = "Oracle"
-
-    def get_class(self):
-        return {
-            DatabaseType.POSTGRES: Postgres,
-            DatabaseType.MSSQL: MsSQL,
-            DatabaseType.ORACLE: Oracle
-        }[self]
+def database_classes(db_type: DatabaseType):
+    return {
+        DatabaseType.POSTGRES: Postgres,
+        DatabaseType.MSSQL: MsSQL,
+        DatabaseType.ORACLE: Oracle
+    }[db_type]
 
 
-class AuthMethods(str, Enum):
-    SQL = 'sql'
-    WINDOWS = 'windows'
-    KERBEROS = 'kerberos'
+from sqlalchemy.orm import Query
+from sqlalchemy.orm.util import AliasedClass
+from sqlalchemy.inspection import inspect
+from sqlalchemy.sql.visitors import traverse
+from sqlalchemy.sql.selectable import Select
+from typing import Set, Type
+
+
+def extract_models_from_query(query: Query) -> Set[Type]:
+    models: Set[Type] = set()
+
+    # Step 1: Extract explicitly queried models
+    try:
+        compile_state = query._compile_state()
+        for ent in compile_state._entities:
+            if hasattr(ent, "entity_zero"):
+                ez = ent.entity_zero
+                if isinstance(ez, AliasedClass):
+                    models.add(ez._sa_class_manager.class_)
+                elif hasattr(ez, "class_"):
+                    models.add(ez.class_)
+    except Exception as e:
+        print(f"[extract_models] Warning during compile_state parsing: {e}")
+
+    # Step 2: Traverse SQL tree and find FromClause with mappers
+    def visit(element):
+        try:
+            mapper = inspect(element, raiseerr=False)
+            if mapper and hasattr(mapper, "class_"):
+                models.add(mapper.class_)
+        except Exception:
+            pass
+
+    # Traverse from the actual .statement (Select object)
+    try:
+        traverse(query.statement, {}, {"clause": visit})
+    except Exception as e:
+        print(f"[extract_models] Warning during statement traversal: {e}")
+
+    return models
+
 
 
 @dataclass
@@ -48,6 +91,7 @@ class Stats:
     inserted: int = 0
     archived: int = 0
     deleted: int = 0
+    updated: int = 0
     number_of_records: int = 0
 
 
@@ -55,38 +99,28 @@ class BaseDBConnector(ABC):
     """
     Base Database Connector for all supported DB's
     """
-    def __init__(self, dbname: str, driver: str):
-        auth_value = os.getenv(f"{dbname}_auth_type", "sql").lower()
+    def __init__(self, settings: DatabaseSettings):
+        self.auth_type: AuthMethods = settings.auth_type
+        self.settings = settings
+        self.settings_class = settings.__class__.__name__
+        self.database_name = settings.database_name
 
-        self.dbname = dbname
-        self.driver = driver
-        self.database = os.getenv(f"{self.dbname}_databasename")
-
-        try:
-            self.auth_type: AuthMethods = AuthMethods(auth_value)
-        except ValueError:
-            valid = runtime.list_enum_values(AuthMethods)
-            raise ValueError(
-                f"Invalid auth_type '{auth_value}' for {dbname}. Must be one of: {valid}"
-            )
-
-        if driver in [DatabaseDriver.POSTGRES, DatabaseDriver.ODBC] and not self.database:
-            raise ValueError(f"{self.dbname}_databasename must be defined in environment variables.")
+        dbname_required = [DatabaseDriver.POSTGRES, DatabaseDriver.ODBC]
+        if settings.database_driver in [DatabaseDriver.POSTGRES, DatabaseDriver.ODBC] and not self.database_name:
+            raise ValueError(f"database_name must be defined in {self.settings_class} setting for drivers {[x.value for x in dbname_required]}.")
 
         self.conn_string = self.build_conn_string()
 
-
-    def get_env_params(self, keys):
-        return {key: os.getenv(f"{self.dbname}_{key}") for key in keys}
 
     @abstractmethod
     def build_conn_string(self):
         pass
 
     def get_host(self) -> str:
-        ip = os.getenv(f"{self.dbname}_ip")
-        port = os.getenv(f"{self.dbname}_port")
-        servername = os.getenv(f"{self.dbname}_servername")
+        # Checks if it will use ip:port or server name based on available env variables
+        ip = self.settings.ip
+        port = self.settings.port
+        servername = self.settings.server_name
 
         if ip and port:
             return f"{ip}:{port}"
@@ -94,55 +128,49 @@ class BaseDBConnector(ABC):
             return servername
         else:
             raise ValueError(
-                f"Missing host configuration for {self.dbname}. "
-                f"Define either {self.dbname}_ip and {self.dbname}_port, or {self.dbname}_servername."
+                f"Missing host configuration for {self.settings_class} settings. "
+                f"Define either ip and port, or server_name."
             )
-
 
 class Postgres(BaseDBConnector):
     def build_conn_string(self):
         host = self.get_host()
+
         # WINDOWS AUTHENTICATION
         if self.auth_type == AuthMethods.WINDOWS:
-            return f"postgresql+psycopg2://@{host}/{self.database}?gssencmode=prefer"
+            return f"postgresql+psycopg2://@{host}/{self.database_name}?gssencmode={self.settings.gssapi.value}"
 
         # KERBEROS AUTHENTICATION
         elif self.auth_type == AuthMethods.KERBEROS:
-            params = self.get_env_params(['username'])
-
-            # if username is not provided it will use current system user
-            username = params.get('username')
-            if username is None:
-                username = ''
-
-            return f"postgresql+psycopg2://{username}@{host}/{self.database}?krbsrvname=postgres"
+            # If username is not provided it will use current system user
+            username = '' if self.settings.username is None else self.settings.username
+            return f"postgresql+psycopg2://{username}@{host}/{self.database_name}?krbsrvname={self.settings.principal_name}"
 
         # SQL USERNAME + PASSWORD AUTHENTICATION
         else:
-            params = self.get_env_params(['username', 'password', 'databasename'])
-            params.update({'host': host})
-            return "postgresql+psycopg2://{username}:{password}@{host}/{databasename}".format(**params)
+            return f"postgresql+psycopg2://{self.settings.username}:{self.settings.password}@{host}/{self.database_name}"
+
 
 
 class MsSQL(BaseDBConnector):
     def build_conn_string(self):
         host = self.get_host()
 
+        # Checks if user want so use different ODBC Driver
+        odbc_driver = self.settings.odbc_driver
+
         # WINDOWS AUTHENTICATION
         if self.auth_type == AuthMethods.WINDOWS:
-            if self.driver != DatabaseDriver.ODBC:
-                raise ValueError("Windows Authentication requires driver='pyodbc'.")
-            return f"mssql+pyodbc://@{host}/{self.database}?trusted_connection=yes&driver=ODBC+Driver+17+for+SQL+Server"
-
+            if self.settings.database_driver != DatabaseDriver.ODBC:
+                raise ValueError("Windows Authentication requires lib pyodbc.")
+            return f"mssql+pyodbc://@{host}/{self.database_name}?trusted_connection=yes&driver={odbc_driver}"
         # SQL USERNAME + PASSWORD AUTHENTICATION
         else:
-            params = self.get_env_params(['username', 'password', 'databasename'])
-            params.update({'host': host})
-            # make connection string using username and password for pymssql
-            if self.driver == DatabaseDriver.ODBC:
-                return "mssql+pyodbc://{username}:{password}@{host}/{databasename}?driver=ODBC+Driver+17+for+SQL+Server".format(**params)
+            # Make connection string using username and password for pymssql
+            if self.settings.database_driver == DatabaseDriver.ODBC:
+                return f"mssql+pyodbc://{self.settings.username}:{self.settings.password}@{host}/{self.database_name}?driver={odbc_driver}"
             else:
-                raise ValueError(f"Unsupported driver '{self.driver}' for MsSQL.")
+                raise ValueError(f"Unsupported driver '{self.settings.database_driver.value}' for MsSQL.")
 
 
 class Oracle(BaseDBConnector):
@@ -151,68 +179,74 @@ class Oracle(BaseDBConnector):
         if self.auth_type in unsupported:
             raise ValueError(f"{self.auth_type.value} authentication is not supported for Oracle.")
         else:
-            params = self.get_env_params(['username', 'password', 'serverip', 'serverport', 'sidname'])
-            return "oracle+cx_oracle://{username}:{password}@{serverip}:{serverport}/{sidname}".format(**params)
+            return f"oracle+cx_oracle://{self.settings.username}:{self.settings.password}@{self.settings.ip}:{self.settings.port}/{self.settings.sidname}"
 
 
 class Database:
-    def __init__(self, dbname, logger,
-                 driver: DatabaseDriver = DatabaseDriver.POSTGRES,
-                 env_check=False, **kwargs):
+    def __init__(self, settings: DatabaseSettings, app_id:str=None, **kwargs):
+        """
 
-        # if flag is true > check if environment variable are loaded
-        if env_check:
-            env.check(logger=logger)
+        :param settings: provide settings class that inherit DatabaseSettings class
+        :param app_id: Its hashed value of app that is assigned by manager.py and stored in db in apps table.
+                       If it is not provided mapping of app dependencies can be done.
+                       Provide app_id when in settings option map_objects is True.
+                       Use it when new database objects are added or removed in any other case set to False for
+                       better performance.
+        :param kwargs: Other key value arguments that create_engine can use
+        """
+        self.settings = settings
+        self.settings_class = settings.__class__.__name__
 
-        # check for Oracle dependencies and library
-        if driver == DatabaseDriver.ORACLE:
-            loaders.check_oracle(logger)
+        # App_id of caller
+        self.app_id: str = app_id
 
-        # check for MSSQL libraries
-        if driver == DatabaseDriver.ODBC:
-            loaders.check_pyodbc()
+        # Default logger
+        self.logger = create_logger()
 
-        # construct engine
-        self.engine = self.engine_construct(dbname, driver, **kwargs)
-        self.session = self.start_session()
+        # Construct engine
+        self.engine: Engine = self.engine_construct(**kwargs)
 
-    @staticmethod
-    def engine_construct(dbname, driver:DatabaseDriver = DatabaseDriver.POSTGRES, **kwargs):
-        dbname_type_str = os.getenv(f"{dbname}_type")
-
-        if dbname_type_str is None:
-            raise ConnectionError(
-                f"Can't find {dbname}_type in env variables. "
-                f"Happens when no .env file is present in the virtual environment or variable is missing in .env file."
-                f"Create one manually or copy it from .env_example."
-            )
-
-        try:
-            db_type = DatabaseType(dbname_type_str)
-        except ValueError:
-            valid = [dt.value for dt in DatabaseType]
-            raise ValueError(f"Unsupported db type '{dbname_type_str}' for {dbname}. Valid values: {valid}")
-
-        db_class = db_type.get_class()
-        db_instance = db_class(dbname, driver)
+    def engine_construct(self, **kwargs) -> Engine:
+        """
+        Constructs and returns a SQLAlchemy Engine.
+        :param kwargs: Additional keyword arguments for SQLAlchemy's create_engine.
+        :return: SQLAlchemy Engine instance
+        """
+        database_class = database_classes(self.settings.database_type)
+        db_instance = database_class(self.settings)
         return create_engine(db_instance.conn_string, pool_size=20, max_overflow=0, **kwargs)
 
-    def start_session(self):
+    def start_session(self) -> Session:
+        warnings.warn(
+            "'start_session()' is deprecated. Use 'create_session()' instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.create_session()
+
+    def create_session(self) -> Session:
+        """
+        Initializes new session to database
+        Recommended usage:
+            with start_session() as session:
+                pass
+        :return: SQLAlchemy session object
+        """
         return sessionmaker(self.engine)()
 
     def merge(
             self,
-            objs,
-            filters=text(''),
+            objs:Union[T, List[T]],
+            session: Session,
+            filters:TextClause=text(''),
             archive_col:str='archive',
             delete:bool=False,
             update:bool=True,
-            session=None,
             stats:bool=False,
             archive_date=None,
             logger=None,
-            compare_key='sha'
-    ):
+            compare_key:Union[str, List[str], Tuple[str, ...]]='sha'
+    ) -> Optional[Stats]:
         """
         Synchronizes a list of ORM objects (from the web) with the corresponding table in the database.
 
@@ -222,9 +256,12 @@ class Database:
         - Infers the database table automatically from the ORM class of the first object.
 
         Args:
-            objs (Union[object, List[object]]):
+            objs (Union[T, List[T]]):
                 A single ORM object or list of ORM objects (typically from an external source like an WEB, API, File).
                 Each object must have a unique field (default: 'sha') for comparison.
+
+            session (sqlalchemy.orm.Session):
+                The SQLAlchemy session to use
 
             filters (sqlalchemy.sql.elements.TextClause, optional):
                 SQLAlchemy filter to narrow the selection of records from the database.
@@ -243,9 +280,6 @@ class Database:
                 If True, records missing from `objs` will have their `archive_col` updated with the current time or `archive_date`.
                 Mutually exclusive with `delete`.
 
-            session (sqlalchemy.orm.Session, optional):
-                The SQLAlchemy session to use. If not provided, falls back to `self.session`.
-
             stats (bool, optional):
                 If True, returns a Stats object summarizing the number of inserts, deletions/archives, and total records processed.
 
@@ -256,8 +290,10 @@ class Database:
             logger (logging.Logger, optional):
                 Logger instance for reporting warnings such as duplicate comparison keys.
 
-            compare_key (str, optional):
-                The field used to determine uniqueness (usually 'sha') for comparison between new and existing records.
+            compare_key (Union[str, List[str], Tuple[str, ...]], optional):
+                One or more attribute names (str or list/tuple of str) used to uniquely identify each object.
+                The field is used to determine uniqueness (default is 'sha') for comparison between new and existing objects.
+                If sha column doesn't exist list 1 or more columns names that are used for comparison of new and old objects
 
         Returns:
             Optional[Stats]: A Stats object with counts for inserted, archived, deleted, and total records.
@@ -266,20 +302,24 @@ class Database:
         Raises:
             AttributeError: If objects do not contain the specified `compare_key`.
         """
+        if logger is not None:
+            self.logger = logger
 
         # No input data = nothing to do
         if not objs:
-            return Stats(0, 0, 0, 0) if stats else None
+            return Stats() if stats else None
 
         # Normalize to list
         if not isinstance(objs, (list, tuple)):
             objs = [objs]
 
+        # Registering models
+        if self.settings.map_objects and self.app_id:
+            models_used = self._track_models_from_objects(objs)
+            self.register_models(models_used)
+
         # Infer db_table from first ORM object if not explicitly provided
         db_table = objs[0].__class__
-
-        # Fallback to default session if not provided
-        session = session or self.session
 
         # Fetch existing records from the database
         result = session.execute(select(db_table).filter(filters))
@@ -290,7 +330,7 @@ class Database:
             new_objs=objs,
             existing_objs=db_data,
             compare_key=compare_key,
-            logger=logger
+            logger=self.logger
         )
 
         # Process deletions or archiving
@@ -314,19 +354,22 @@ class Database:
                 number_of_records=len(objs)
             )
 
-    def delete(self, object_list, session=None):
+    def delete(self, object_list, session: Session):
         """
         Deletes a list of ORM objects from the database.
         Caller must commit afterward.
         """
-        session = session or self.session
         if not object_list:
             return
+
         for obj in object_list:
             session.delete(obj)
 
-    @staticmethod
-    def archive(object_list, session, archive_col='archive', archive_date=None):
+        if self.settings.map_objects and self.app_id:
+            models_used = self._track_models_from_objects(object_list)
+            self.register_models(models_used)
+
+    def archive(self, object_list, session: Session, archive_col='archive', archive_date=None):
         """
         Updates archive_col on existing DB records with a timestamp.
         """
@@ -339,14 +382,404 @@ class Database:
             setattr(obj, archive_col, archive_time)
             session.add(obj)
 
-    def bulk_insert(self, object_list, session=None):
+        if self.settings.map_objects and self.app_id:
+            models_used = self._track_models_from_objects(object_list)
+            self.register_models(models_used)
+
+    def bulk_insert(self, object_list, session: Session):
         """
         Performs a bulk insert of ORM objects using add_all.
         Caller is responsible for committing.
         """
-        session = session or self.session
         if object_list:
             session.add_all(object_list)
+
+            if self.settings.map_objects and self.app_id:
+                models_used = self._track_models_from_objects(object_list)
+                self.register_models(models_used)
+
+    def update_insert(
+            self,
+            objects: Union[T, List[T]],
+            session: Session,
+            filter_cols: List[str],
+            commit: bool = True
+    ) -> Stats:
+        """
+        Performs update or insert of row based if filter columns values are matched or not.
+        Dependency mapping runs only once per table/model even if it is a batch.
+        """
+        if not isinstance(objects, (list, tuple)):
+            objects = [objects]
+
+        if not objects:
+            return Stats()
+
+        stats = Stats(number_of_records=len(objects))
+        db_table = objects[0].__class__
+        tracked_models = set()
+
+        for obj in objects:
+            filters = and_(*[(getattr(db_table, col) == getattr(obj, col)) for col in filter_cols])
+            existing_records = self.query(session, db_table, map_objects=True, track_models=tracked_models).filter(
+                filters).all()
+
+            if not existing_records:
+                session.add(obj)
+                stats.inserted += 1
+            else:
+                for record in existing_records:
+                    changed = False
+                    for col, value in vars(obj).items():
+                        if col == "_sa_instance_state" or not hasattr(record, col):
+                            continue
+                        current_value = getattr(record, col)
+                        if current_value != value:
+                            setattr(record, col, value)
+                            changed = True
+                    if changed:
+                        session.add(record)
+                        stats.updated += 1
+
+        # Register once per batch
+        if tracked_models and self.app_id:
+            self.register_models(tracked_models)
+
+        if commit:
+            session.commit()
+
+        return stats
+
+    def query(
+            self,
+            session: Session,
+            *models: Type,
+            map_objects: bool = True,
+            track_models: Optional[Set[Type]] = None
+    ) -> Query:
+        query_obj = session.query(*models)
+
+        if map_objects and self.settings.map_objects:
+            try:
+                extracted_models = extract_models_from_query(query_obj)
+            except Exception as e:
+                print(f"[map_objects] Failed to extract models: {e}")
+                extracted_models = set()
+
+            all_models = set(models) | extracted_models
+
+            if track_models is not None:
+                track_models.update(all_models)
+            elif self.app_id:
+                self.register_models(all_models)
+
+        return query_obj
+
+    def execute(self, sql_text: str, session: Session) -> Result:
+        """
+        Executes only stored procedures, functions, or package procedures.
+        Automatically registers used routine in AppDbObjects.
+
+        Raises:
+            ValueError if SQL is not a supported routine call.
+        """
+        if not self.settings.map_objects or not self.app_id:
+            return session.execute(text(sql_text))
+
+        # STEP 1: Validate allowed usage
+        pattern = re.compile(r"""
+            (?P<keyword>call|exec(?:ute)?|select|begin)  # match starting keyword
+            \s+
+            (?P<full_name>[\w\.]+)                       # match name: [pkg.]schema.fn
+        """, re.IGNORECASE | re.VERBOSE)
+
+        match = pattern.search(sql_text.strip())
+        if not match:
+            raise ValueError("Only procedure/function/package calls are allowed in db.execute().")
+
+        full_name = match.group("full_name")
+        parts = full_name.split(".")
+        name, schema = parts[-1], parts[-2] if len(parts) > 1 else None
+
+        # STEP 2: Determine type (function/procedure/package)
+        routine_type = self.get_routine_type(name, schema=schema)
+        if routine_type.lower() not in ("function", "procedure"):
+            raise ValueError(f"Unsupported or unknown routine type for {full_name}")
+
+        # Preparing data for registration
+        db_name_override, resolved_schema = self.extract_database_and_schema(schema or "")
+        record_data = {
+            "app_id": self.app_id,
+            "server_name": self.settings.server_name,
+            "server_ip": self.settings.ip,
+            "database_name": db_name_override or self.settings.database_name,
+            "database_schema": resolved_schema,
+            "object_name": name,
+            "object_type": routine_type.lower()
+        }
+        self.register_sql_objects([record_data])
+
+
+    """
+    From here are class method that are used for mapping database objects during execution
+    """
+
+    def _track_models_from_objects(self, objects: List[object]) -> Set[Type]:
+        """
+        Collects distinct ORM model classes from the given object list.
+        """
+        return {obj.__class__ for obj in objects if hasattr(obj, "__class__")}
+
+    def get_model_source_type(self, model) -> str:
+        """
+        Tries to identify whether the model is mapped to a table, view,
+        function, or procedure. Defaults to 'unknown' if not identifiable.
+        """
+        try:
+            table_name = model.__table__.name
+            schema = self.get_schema_for_model(model)
+            inspector = inspect(self.engine)
+
+            # 1. Check for views
+            views = inspector.get_view_names(schema=schema)
+            if table_name in views:
+                return "view"
+
+            # 2. Check for tables
+            tables = inspector.get_table_names(schema=schema)
+            if table_name in tables:
+                return "table"
+
+            # 3. Fallback: try routine (function or procedure)
+            routine_type = self.get_routine_type(table_name, schema=schema)
+            if routine_type.lower() in ("function", "procedure"):
+                return routine_type.lower()
+
+            # 4. Unknown type
+            return "unknown"
+
+        except Exception as e:
+            print(f"[get_model_source_type] Error for {model.__name__}: {e}")
+            return "unknown"
+
+    def get_routine_type(self, object_name: str, schema: Optional[str] = None) -> str:
+        """
+        Returns the type of routine (procedure/function) in the connected database.
+
+        - For Oracle: queries ALL_OBJECTS
+        - For PostgreSQL: queries information_schema.routines
+        - For MSSQL: queries sys.objects
+
+        Returns: 'FUNCTION', 'PROCEDURE', or 'UNKNOWN'
+        """
+        db_type = self.settings.database_type
+
+        with self.engine.connect() as conn:
+            if db_type == DatabaseType.ORACLE:
+                query = f"""
+                SELECT OBJECT_TYPE FROM ALL_OBJECTS
+                WHERE OBJECT_NAME = :name
+                {f"AND OWNER = :schema" if schema else ""}
+                """
+                params = {"name": object_name}
+                if schema:
+                    params["schema"] = schema
+                result = conn.execute(text(query), params).fetchone()
+                return result[0] if result else "unknown"
+
+            elif db_type == DatabaseType.POSTGRES:
+                query = """
+                SELECT routine_type
+                FROM information_schema.routines
+                WHERE routine_name = :name
+                AND routine_schema = :schema
+                """
+                result = conn.execute(
+                    text(query), {"name": object_name, "schema": schema or "public"}
+                ).fetchone()
+                return result[0].upper() if result else "unknown"
+
+            elif db_type == DatabaseType.MSSQL:
+                query = """
+                SELECT type_desc
+                FROM sys.objects
+                WHERE name = :name
+                AND type IN ('P', 'FN', 'IF', 'TF')
+                """
+                result = conn.execute(text(query), {"name": object_name}).fetchone()
+                if result:
+                    # Normalize MSSQL terms
+                    td = result[0].lower()
+                    if "procedure" in td:
+                        return "PROCEDURE"
+                    elif "function" in td:
+                        return "FUNCTION"
+                return "unknown"
+
+            else:
+                raise NotImplementedError(f"Routine type check not implemented for {db_type}")
+
+    def get_schema_for_model(self, db_object) -> str:
+        """
+        Returns the schema for a given model, with DBMS-specific fallbacks.
+        """
+        if isinstance(db_object, str):
+            schema = db_object
+        else:
+            schema = db_object.__table__.schema
+
+        if schema:
+            return schema
+
+        if self.settings.database_type == DatabaseType.POSTGRES:
+            return "public"
+        elif self.settings.database_type == DatabaseType.MSSQL:
+            return "dbo"
+        elif self.settings.database_type == DatabaseType.ORACLE:
+            return self.settings.username.upper()  # Oracle default schema is username
+        else:
+            return "unknown"
+
+    def extract_database_and_schema(self, db_object) -> Tuple[Optional[str], str]:
+        """
+        Extracts (database_name, schema_name) from a model's __table__.schema definition.
+        Handles special formats like 'OtherDB..' in MSSQL, where '..' implies default schema (dbo).
+        """
+        if isinstance(db_object, str):
+            schema = db_object
+        else:
+            schema = db_object.__table__.schema
+
+        if schema and '.' in schema:
+            parts = schema.split('.')
+
+            # Case: 'OtherDB..' → ['', '', ...] or ['OtherDB', '', 'SomeTable']
+            if len(parts) == 2:
+                db_name, schema_part = parts
+                schema_part = schema_part or self.get_schema_for_model(db_object)
+                return db_name, schema_part
+
+            elif len(parts) > 2:
+                db_name = parts[0]
+                schema_part = parts[1] or self.get_schema_for_model(db_object)
+                return db_name, schema_part
+
+        # No cross-db prefix → use fallback logic
+        return None, self.get_schema_for_model(db_object)
+
+
+    def register_models(self, db_objects: set):
+        """
+        Registers ORM objects
+        """
+        from data_collector.tables import AppDbObjects
+        # Creating session to database where data_collector is deployed
+        system_db  = Database(MainDatabaseSettings())
+        with system_db.create_session() as session:
+            dependancies = list()
+            dependancies_hash = list()
+
+            for db_object in db_objects:
+                try:
+                    object_name = db_object.__table__.name
+                    db_name_override, schema = self.extract_database_and_schema(db_object)
+                    object_type = self.get_model_source_type(db_object)
+
+                    # Source info: comes from the engine tied to this model's session (self)
+                    database_name = db_name_override or self.settings.database_name
+
+                    # Prepare data for ORM object
+                    record_data = self.prepare_dependency_record(
+                        object_name=object_name,
+                        object_type=object_type,
+                        schema=schema,
+                        database_name=database_name,
+                    )
+                    record_hash = record_data["sha"]
+
+                    # Create AppDbObjects entry
+                    if record_hash not in dependancies_hash:
+                        dependency = AppDbObjects(**record_data)
+                        dependancies.append(dependency)
+                        dependancies_hash.append(record_hash)
+
+                except Exception as e:
+                    self.logger.error(f"[register_models] Failed to register {db_object.__name__}: {e}")
+
+            if dependancies:
+                filters = and_(AppDbObjects.app_id == self.app_id)
+                system_db.merge(dependancies, session, filters=filters)
+
+
+    def register_sql_objects(self, objects: list[dict]):
+        """
+        Registers non-ORM objects (from raw SQL) using same logic as register_models.
+        """
+        from data_collector.tables import AppDbObjects
+        system_db = Database(MainDatabaseSettings())
+
+        with system_db.create_session() as session:
+            dependancies = []
+            dependancies_hash = []
+
+            for obj in objects:
+                try:
+                    object_name = obj["object_name"]
+                    schema = obj["database_schema"] or self.get_schema_for_model(obj["database_schema"] )
+                    database_name = obj["database_name"] or self.settings.database_name
+                    object_type = obj["object_type"]
+
+                    # Verify actual type if needed
+                    if object_type in {"function", "procedure"}:
+                        object_type = self.get_routine_type(object_name, schema).lower()
+                    elif object_type == "table":
+                        inspector = inspect(self.engine)
+                        if object_name in inspector.get_view_names(schema=schema):
+                            object_type = "view"
+
+                    record_data = self.prepare_dependency_record(
+                        object_name=object_name,
+                        object_type=object_type,
+                        schema=schema,
+                        database_name=database_name,
+                    )
+                    record_hash = record_data["sha"]
+
+                    if record_hash not in dependancies_hash:
+                        dependancies.append(AppDbObjects(**record_data))
+                        dependancies_hash.append(record_hash)
+                except Exception as e:
+                    self.logger.error(f"[register_sql_objects] Failed to register {obj}: {e}")
+
+            if dependancies:
+                filters = and_(AppDbObjects.app_id == self.app_id)
+                system_db.merge(dependancies, session, filters=filters)
+
+    def prepare_dependency_record(
+            self,
+            *,
+            object_name: str,
+            object_type: str,
+            schema: str,
+            database_name: str
+    ) -> dict:
+        """
+        Prepares a fully hashed and timestamped dictionary for AppDbObjects registration.
+        """
+        record_data = {
+            "app_id": self.app_id,
+            "server_type": self.settings.database_type.value,
+            "server_name": self.settings.server_name,
+            "server_ip": self.settings.ip,
+            "database_name": database_name,
+            "database_schema": schema,
+            "object_name": object_name,
+            "object_type": object_type
+        }
+
+        record_hash = runtime.make_hash(record_data)
+        record_data.update({"sha": record_hash, "last_use_date": datetime.now()})
+        return record_data
 
 
 class SHAHashableMixin:

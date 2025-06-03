@@ -1,6 +1,5 @@
 psycopg2-binary
-sqlalchemy
-python-dotenv
+sqlalchemy~=2.0.40
 line_profiler
 pika
 requests
@@ -9,5 +8,8 @@ lxml
 python-dateutil
 pandas
 html5lib
-pydantic-settings
-cryptography
+pydantic-settings~=2.9.1
+cryptography~=44.0.3
+data_collector~=0.0.1
+pydantic~=2.11.4
+sphinx
