@@ -8,7 +8,7 @@ from sqlalchemy import (
 from enum import IntEnum
 from dataclasses import dataclass, field
 from sqlalchemy.orm import (declarative_base, relationship)
-from data_collector.utilities.database import core
+from data_collector.utilities.database import main
 from data_collector.settings.main import MainDatabaseSettings
 
 # Base class for all ORM models
