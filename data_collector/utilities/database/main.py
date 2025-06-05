@@ -20,8 +20,6 @@ from data_collector.utilities.database import loaders
 from data_collector.utilities.log import create_logger
 from typing import Optional, List, Union, Tuple, TypeVar, Type
 
-from sqlglot import parse_one
-from sqlglot.expressions import Table, Func
 
 from sqlalchemy import (
     text, select, Column, String, and_
@@ -185,14 +183,24 @@ class Oracle(BaseDBConnector):
 class Database:
     def __init__(self, settings: DatabaseSettings, app_id:str=None, **kwargs):
         """
+        Initializes a database interface with SQLAlchemy engine and optional object mapping.
 
-        :param settings: provide settings class that inherit DatabaseSettings class
-        :param app_id: Its hashed value of app that is assigned by manager.py and stored in db in apps table.
-                       If it is not provided mapping of app dependencies can be done.
-                       Provide app_id when in settings option map_objects is True.
-                       Use it when new database objects are added or removed in any other case set to False for
-                       better performance.
-        :param kwargs: Other key value arguments that create_engine can use
+        Args:
+            settings (DatabaseSettings): Configuration instance that inherits from `DatabaseSettings`,
+                containing connection parameters like host, port, authentication, and driver info.
+
+            app_id (str, optional): A hashed application identifier assigned by `manager.py` and stored
+                in the `apps` table in the database. It is required when `map_objects=True` in settings.
+
+                This ID is used to track database object dependencies dynamically. Provide it:
+                - When new database objects (tables, views, routines) may be added or removed
+                - When you want automatic registration of those dependencies for analytics or orchestration
+
+                If you're running in a static or read-only context, or object tracking isn't required,
+                omit this for better performance.
+
+            **kwargs: Additional keyword arguments passed to SQLAlchemy's `create_engine()`.
+
         """
         self.settings = settings
         self.settings_class = settings.__class__.__name__
@@ -209,8 +217,12 @@ class Database:
     def engine_construct(self, **kwargs) -> Engine:
         """
         Constructs and returns a SQLAlchemy Engine.
-        :param kwargs: Additional keyword arguments for SQLAlchemy's create_engine.
-        :return: SQLAlchemy Engine instance
+
+        Args:
+            **kwargs: Additional keyword arguments passed to SQLAlchemy's `create_engine()`.
+
+        Returns:
+            Engine: A SQLAlchemy Engine instance ready for connections.
         """
         database_class = database_classes(self.settings.database_type)
         db_instance = database_class(self.settings)
@@ -226,11 +238,16 @@ class Database:
 
     def create_session(self) -> Session:
         """
-        Initializes new session to database
-        Recommended usage:
-            with start_session() as session:
-                pass
-        :return: SQLAlchemy session object
+        Initializes a new SQLAlchemy session.
+
+        Recommended usage::
+
+            with db.create_session() as session:
+                # your queries here
+                ...
+
+        Returns:
+            Session: SQLAlchemy session object.
         """
         return sessionmaker(self.engine)()
 
