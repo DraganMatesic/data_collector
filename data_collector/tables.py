@@ -1,8 +1,8 @@
 import logging
 
 from sqlalchemy import (
-    Column, String, BigInteger, Sequence, ForeignKey, ForeignKeyConstraint,
-    Boolean, DateTime, Integer, Text, ARRAY, text, func
+    Column, String, BigInteger, ForeignKey, ForeignKeyConstraint,
+    Boolean, DateTime, Integer, Text, ARRAY, text, func, Identity
 )
 
 from enum import IntEnum
@@ -12,7 +12,7 @@ from data_collector.utilities.database import main
 from data_collector.settings.main import MainDatabaseSettings
 
 # Base class for all ORM models
-Base = declarative_base(cls=core.BaseModel)
+Base = declarative_base(cls=main.BaseModel)
 
 
 class RunStatus(IntEnum):
@@ -92,8 +92,7 @@ class AppGroups(Base):
     __tablename__ = 'app_groups'
 
     # Auto-incrementing primary key using a database sequence
-    id_seq = Sequence('app_groups_id_seq', metadata=Base.metadata)
-    id = Column(BigInteger, id_seq, server_default=id_seq.next_value(), primary_key=True)
+    id = Column(BigInteger, Identity(), primary_key=True)
 
     # Unique name of the group
     name = Column(String(256), unique=True)
@@ -106,8 +105,7 @@ class AppParents(Base):
     __tablename__ = 'app_parents'
 
     # Auto-incrementing ID
-    id_seq = Sequence('app_parents_id_seq', metadata=Base.metadata)
-    id = Column(BigInteger, id_seq, server_default=id_seq.next_value())
+    id = Column(BigInteger, Identity())
 
     parent = Column(String(64), unique=True, comment="Parent identifier (unique across all) - hash value")
     name = Column(String(256), primary_key=True, comment="Name and group together form a composite primary key")
@@ -122,8 +120,7 @@ class Apps(Base):
     __tablename__ = 'apps'
 
     # Auto-incrementing ID
-    id_seq = Sequence('apps_id_seq', metadata=Base.metadata)
-    id = Column(BigInteger, id_seq, server_default=id_seq.next_value())
+    id = Column(BigInteger, Identity())
 
     # Application identifier unique hash value
     app = Column(String(64), unique=True, index=True, nullable=False)
@@ -205,8 +202,7 @@ class AppDbObjects(Base):
     __tablename__ = 'app_db_objects'
 
     # Auto-incrementing ID
-    id_seq = Sequence('app_db_objects_id_seq', metadata=Base.metadata)
-    id = Column(BigInteger, id_seq, server_default=id_seq.next_value(), primary_key=True)
+    id = Column(BigInteger, Identity(), primary_key=True)
 
     # Application identifier unique hash value
     app_id = Column(String(64), index=True, nullable=False)
@@ -282,7 +278,7 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
 
-    database = core.Database(MainDatabaseSettings())
+    database = main.Database(MainDatabaseSettings())
 
     # todo add in manager.py to check if tables are created and if not to create them before populating with data
     create_tables()
