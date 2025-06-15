@@ -330,6 +330,13 @@ class Database:
         if not isinstance(objs, (list, tuple)):
             objs = [objs]
 
+        # Refuse lists of primitives early
+        if all(isinstance(o, str) for o in objs):
+            raise TypeError(
+                "merge() received possibly a list of hash strings."
+                "Pass the original ORM objects, or call hash_list(..., inplace=True)."
+            )
+
         # Registering models
         if self.settings.map_objects and self.app_id:
             models_used = self._track_models_from_objects(objs)
