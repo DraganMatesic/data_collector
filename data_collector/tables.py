@@ -2,7 +2,8 @@ import logging
 
 from sqlalchemy import (
     Column, String, BigInteger, ForeignKey, ForeignKeyConstraint,
-    Boolean, DateTime, Integer, Text, ARRAY, text, func, Identity
+    Boolean, DateTime, Integer, Text, ARRAY, text, func, Identity,
+    Date
 )
 
 from enum import IntEnum
@@ -218,6 +219,24 @@ class AppDbObjects(Base):
     last_use_date = Column(DateTime, comment="when the last time DDL action was done")
     sha = Column(String(64), nullable=False, index=True)
 
+    archive = Column(DateTime, comment="data and time this database object was removed from usage")
+    date_created = Column(DateTime, server_default=func.now())  # DateCreated
+
+
+class ExampleTable(Base):
+    """
+    Used for examples described in documentation
+    """
+    __tablename__ = 'example_table'
+
+    # Auto-incrementing ID
+    id = Column(BigInteger, Identity(), primary_key=True)
+    company_id = Column(Integer)
+    person_id = Column(Integer)
+    name = Column(String(15))
+    surname = Column(String(25))
+    birth_date = Column(Date)
+    sha = Column(String(64))
     archive = Column(DateTime, comment="data and time this database object was removed from usage")
     date_created = Column(DateTime, server_default=func.now())  # DateCreated
 
