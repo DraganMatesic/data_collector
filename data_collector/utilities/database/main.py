@@ -8,21 +8,17 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 from abc import ABC, abstractmethod
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, BigInteger
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.engine import CursorResult
-from pydantic_settings import BaseSettings
 from sqlalchemy.engine import Engine, Result
 from sqlalchemy.sql.elements import TextClause
 from sqlalchemy.ext.declarative import declared_attr
 from data_collector.utilities.functions import runtime
-from data_collector.utilities.database import loaders
 from data_collector.utilities.log import create_logger
-from typing import Optional, List, Union, Tuple, TypeVar, Type
-
+from typing import Optional, List, Union, Tuple, TypeVar
 
 from sqlalchemy import (
-    text, select, Column, String, and_
+    text, select, Column, String, and_, Identity, Sequence
 )
 
 from data_collector.settings.main import (DatabaseSettings,
@@ -30,6 +26,12 @@ from data_collector.settings.main import (DatabaseSettings,
                                           AuthMethods,
                                           DatabaseDriver,
                                           MainDatabaseSettings)
+
+from sqlalchemy.orm import Query
+from sqlalchemy.orm.util import AliasedClass
+from sqlalchemy.inspection import inspect
+from sqlalchemy.sql.visitors import traverse
+from typing import Set, Type
 
 T = TypeVar("T")
 
@@ -39,14 +41,6 @@ def database_classes(db_type: DatabaseType):
         DatabaseType.MSSQL: MsSQL,
         DatabaseType.ORACLE: Oracle
     }[db_type]
-
-
-from sqlalchemy.orm import Query
-from sqlalchemy.orm.util import AliasedClass
-from sqlalchemy.inspection import inspect
-from sqlalchemy.sql.visitors import traverse
-from sqlalchemy.sql.selectable import Select
-from typing import Set, Type
 
 
 def extract_models_from_query(query: Query) -> Set[Type]:
@@ -82,6 +76,28 @@ def extract_models_from_query(query: Query) -> Set[Type]:
 
     return models
 
+
+def auto_increment_column(database_type: DatabaseType = None, primary_key=True, **col_kw):
+    """
+    Return a Column that behaves like an autoincrement PK
+    on the given database backend (Postgres, Oracle, SQL Server).
+    Extra kwargs are forwarded to Column().
+    """
+    if database_type is None:
+        main_db_settings = MainDatabaseSettings()
+        database_type = main_db_settings.database_type
+
+    if database_type is DatabaseType.POSTGRES:
+        return Column(BigInteger, Identity(always=True), primary_key=primary_key, **col_kw)
+
+    elif database_type is DatabaseType.ORACLE:
+        # Oracle still needs an explicit Sequence object
+        return Column(BigInteger, Sequence("SEQ_%(column_0_name)s"), primary_key=primary_key, **col_kw)
+
+    else:
+        # SQL Server, MySQL, SQLite …
+        # plain autoincrement works everywhere else
+        return Column(BigInteger, autoincrement=True, primary_key=primary_key, **col_kw)
 
 
 @dataclass
