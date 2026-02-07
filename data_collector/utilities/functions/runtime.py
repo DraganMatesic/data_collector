@@ -191,7 +191,7 @@ def is_module_available(module_name: str) -> bool:
     """
     Checks if a Python module is installed and importable.
 
-    :param module_name: name of the module (e.g. 'pyodbc', 'pymssql', 'cx_oracle')
+    :param module_name: name of the module (e.g. 'pyodbc', 'oracledb', 'pymssql')
     :return: True if module can be imported, False otherwise
     """
     try:
