@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 import warnings
 from enum import Enum
 from datetime import datetime
@@ -14,7 +15,6 @@ from sqlalchemy.engine import Engine, Result
 from sqlalchemy.sql.elements import TextClause
 from sqlalchemy.ext.declarative import declared_attr
 from data_collector.utilities.functions import runtime
-from data_collector.utilities.log import create_logger
 from typing import Optional, List, Union, Tuple, TypeVar
 
 from sqlalchemy import (
@@ -225,7 +225,7 @@ class Database:
         self.app_id: str = app_id
 
         # Default logger
-        self.logger = create_logger()
+        self.logger = logging.getLogger(__name__)
 
         # Construct engine
         self.engine: Engine = self.engine_construct(**kwargs)
