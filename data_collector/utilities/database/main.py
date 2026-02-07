@@ -193,7 +193,7 @@ class Oracle(BaseDBConnector):
         if self.auth_type in unsupported:
             raise ValueError(f"{self.auth_type.value} authentication is not supported for Oracle.")
         else:
-            return f"oracle+cx_oracle://{self.settings.username}:{self.settings.password}@{self.settings.ip}:{self.settings.port}/{self.settings.sidname}"
+            return f"oracle+oracledb://{self.settings.username}:{self.settings.password}@{self.settings.ip}:{self.settings.port}/{self.settings.sidname}"
 
 
 class Database:
