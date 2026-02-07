@@ -6,29 +6,32 @@ def initialize_oracle_client(logger=None) -> bool:
     """
     Initializes the Oracle Instant Client if the environment variable `oracle_client` is set.
 
+    oracledb runs in thin mode by default (no Oracle Client needed).
+    If `oracle_client` env var is set, it switches to thick mode for advanced features.
+
     :param logger: Optional logger for error or debug output
-    :return: True if initialization was attempted (and succeeded or already initialized), False otherwise
+    :return: True if initialization succeeded, False otherwise
     """
     try:
-        cx_oracle = importlib.import_module('cx_Oracle')
+        oracledb = importlib.import_module('oracledb')
     except ImportError:
         if logger:
-            logger.error("cx_Oracle module not installed.")
+            logger.error("oracledb module not installed.")
         return False
 
     oracle_path = os.getenv('oracle_client')
 
     if not oracle_path:
         if logger:
-            logger.warning("Environment variable 'oracle_client' is not set.")
-        return False
+            logger.info("No 'oracle_client' env var set. Using oracledb thin mode (no Oracle Client required).")
+        return True
 
     try:
-        cx_oracle.init_oracle_client(lib_dir=oracle_path)
+        oracledb.init_oracle_client(lib_dir=oracle_path)
         if logger:
-            logger.info(f"Oracle Instant Client initialized from: {oracle_path}")
+            logger.info(f"Oracle thick mode initialized from: {oracle_path}")
         return True
-    except cx_oracle.ProgrammingError as e:
+    except oracledb.ProgrammingError as e:
         # Already initialized is a known safe case
         if "already initialized" in str(e):
             if logger:
@@ -40,9 +43,9 @@ def initialize_oracle_client(logger=None) -> bool:
 
 
 def check_oracle(logger=None):
-    # checks if oracle lib is installed
-    if not runtime.is_module_available('cx_Oracle'):
-        raise ImportError("cx_Oracle is required but not installed. Install it with `pip install cx_Oracle`.")
+    # checks if oracledb lib is installed
+    if not runtime.is_module_available('oracledb'):
+        raise ImportError("oracledb is required but not installed. Install it with `pip install oracledb`.")
 
     # checks if oracle client is initialized
     if not initialize_oracle_client(logger=logger):

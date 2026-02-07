@@ -12,7 +12,7 @@ class DatabaseType(Enum):
 
 class DatabaseDriver(str, Enum):
     POSTGRES = 'psycopg2'
-    ORACLE = 'cx_oracle'
+    ORACLE = 'oracledb'
     ODBC = 'pyodbc'
 
     @classmethod
