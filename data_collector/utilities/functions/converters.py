@@ -1,7 +1,7 @@
 import inspect
 from typing import Dict, Any, Union
 from collections.abc import Mapping
-from dataclasses import is_dataclass, asdict
+from dataclasses import is_dataclass
 
 _SENTINEL = object()
 
@@ -31,7 +31,6 @@ def to_none(value):
     if str(value).lower() in ['none', 'nan', 'nat']:
         return None
     return value
-
 
 
 def object_to_dict(obj: Any) -> Union[Dict[str, Any], Any]:
