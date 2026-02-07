@@ -38,7 +38,7 @@ class DatabaseSettings(BaseSettings):
     username: str = None
     password: str = None
 
-    # Required for PostgreSQL and MSSQL databases
+    # Required for PostgresSQL and MSSQL databases
     database_name: Optional[str] = None
     database_type: DatabaseType
     database_driver: DatabaseDriver
@@ -51,8 +51,8 @@ class DatabaseSettings(BaseSettings):
 
     # Auth type on wanted database server
     # sql (username and password) all DB's
-    # windows (Windows authentication) - PostgreSQL and MSSQL
-    # kerberos (Kerberos authentication) - PostgreSQL
+    # windows (Windows authentication) - PostgresSQL and MSSQL
+    # kerberos (Kerberos authentication) - PostgresSQL
     auth_type: AuthMethods = AuthMethods.SQL
 
     # psycopg2 option for Postgresql
@@ -88,6 +88,15 @@ class MainDatabaseSettings(DatabaseSettings):
     map_objects: Optional[bool] = True
 
 
-class GeneralSettings(BaseSettings):
-    db_main: MainDatabaseSettings = MainDatabaseSettings()
+class LogSettings(BaseSettings):
+    log_to_db: bool = True
+    log_to_splunk: bool = False
+    splunk_hec_url: str | None = None
+    splunk_token: str | None = None
+    log_max_queue: int = 10000
 
+
+class GeneralSettings(BaseSettings):
+    """General settings is used when more than one setting is required to be imported into app"""
+    db_main: MainDatabaseSettings = MainDatabaseSettings()
+    log_settings: LogSettings = LogSettings()
