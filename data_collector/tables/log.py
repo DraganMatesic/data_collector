@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, String, BigInteger, ForeignKey,
-    DateTime, Integer, Text, text
+    DateTime, Integer, Text, text, func
 )
 
 from data_collector.tables.apps import Apps
@@ -15,6 +15,9 @@ class CodebookLogLevel(Base):
     __tablename__ = 'c_log_level'
     id = Column(BigInteger, primary_key=True, comment="log level ID")
     description = Column(String(128), comment="Log level description")
+    sha = Column(String(64), comment="Hash for merge-based seeding")
+    archive = Column(DateTime, comment="Soft delete timestamp")
+    date_created = Column(DateTime, server_default=func.now())
 
 
 class Logs(Base):
