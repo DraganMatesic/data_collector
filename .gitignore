@@ -1,5 +1,4 @@
 .idea/
-tests/
 __pycache__/
 data_collector.egg-info/
 dist/

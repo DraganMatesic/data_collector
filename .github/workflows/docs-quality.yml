@@ -1,0 +1,30 @@
+name: docs-quality
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "data_collector/utilities/validate_docs.py"
+      - ".github/workflows/docs-quality.yml"
+  push:
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "data_collector/utilities/validate_docs.py"
+      - ".github/workflows/docs-quality.yml"
+
+jobs:
+  docs-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Validate documentation
+        run: python data_collector/utilities/validate_docs.py
