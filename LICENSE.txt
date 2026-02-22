@@ -1,19 +1,140 @@
-Custom License for data_collector
-Copyright (c) 2025 Dragan Matešić
+Proprietary License for data_collector
+Copyright (c) 2025-2026 Dragan Matesic. All rights reserved.
 
-Permission is granted to individuals and organizations to use this software
-for personal, educational, or internal research purposes, provided that this
-notice and the name of the author are retained in all copies.
+1. DEFINITIONS
 
-Commercial use, including but not limited to inclusion in proprietary software,
-products, or services intended for sale or profit, is strictly prohibited without
-a valid commercial license obtained from the author.
+   1.1 "Software" means this repository and all associated source code,
+   documentation, configuration files, schemas, scripts, assets, and any
+   updates or derivative materials.
 
-Modification, redistribution, or sublicensing of this software or any of its
-derivative works is not permitted without the explicit written consent of the author.
+   1.2 "Author" means Dragan Matesic.
 
-This software is provided "as-is", without warranty of any kind, express or implied.
-In no event shall the author be liable for any claim, damages, or other liability
-arising from the use of this software.
+   1.3 "Commercial Use" means any use in or for a business, organization,
+   professional activity, client project, internal operations, managed service,
+   SaaS/API offering, consulting engagement, or any activity that directly or
+   indirectly generates value, revenue, or commercial advantage.
 
-To inquire about commercial licensing, contact: 32225602+DraganMatesic@users.noreply.github.com
+   1.4 "Licensed Entity" means the legal entity that has executed a written
+   commercial license agreement with the Author.
+
+   1.5 "Authorized Users" means employees and contractors of a Licensed Entity,
+   solely while acting on behalf of that Licensed Entity within the scope of
+   the executed commercial license agreement.
+
+   1.6 "Authorized Fork" means a fork or mirror of this repository created and
+   controlled by a Licensed Entity for use by its Authorized Users under a
+   valid commercial license.
+
+2. LIMITED PUBLIC ACCESS GRANT (GITHUB COMPATIBILITY)
+
+   2.1 For users without a commercial license, the only permission granted is
+   limited access required by GitHub platform functionality for public
+   repositories, including viewing and forking on GitHub.
+
+   2.2 Section 2.1 does not grant any right to run, execute, test, modify for
+   use, deploy, distribute outside GitHub platform mechanics, sublicense,
+   provide services with, or otherwise use the Software.
+
+3. NO LICENSE BY DEFAULT
+
+   3.1 Except for the limited public access in Section 2, no license or other
+   rights are granted, whether express, implied, by estoppel, or otherwise.
+
+   3.2 Without a signed commercial license, you may not:
+
+   (a) run, execute, test, or use the Software for any purpose;
+   (b) modify, adapt, translate, reverse engineer, decompile, disassemble, or
+       create derivative works for use;
+   (c) distribute, sublicense, lease, rent, loan, sell, resell, or otherwise
+       transfer the Software or rights in it to any third party;
+   (d) host or deploy the Software in any environment;
+   (e) use the Software for Commercial Use;
+   (f) remove, alter, or obscure proprietary notices.
+
+4. COMMERCIAL LICENSE GRANT
+
+   4.1 Rights to use the Software are granted only by a separate written
+   commercial license agreement signed by the Author and the Licensed Entity.
+
+   4.2 A commercial license defines scope, term, territory, fee structure,
+   permitted users, and any redistribution rights. No right exists unless it is
+   expressly stated in that agreement.
+
+5. LICENSED TEAM USE AND AUTHORIZED FORKS
+
+   5.1 A Licensed Entity may permit its Authorized Users to access and use the
+   Software, including within Authorized Forks, only for the Licensed Entity's
+   internal development and internal business operations as explicitly allowed
+   by the commercial license agreement.
+
+   5.2 Authorized Users may build applications and derivative works on top of
+   the Software only for the Licensed Entity and only within licensed scope.
+
+6. THIRD-PARTY DELIVERY RESTRICTION
+
+   6.1 Unless expressly authorized in a separate signed OEM or redistribution
+   addendum, a Licensed Entity may not provide, transfer, sublicense, distribute,
+   or otherwise make available the Software or derivative works to third parties,
+   including clients, affiliates, vendors, or partners.
+
+   6.2 Client-facing service delivery based on the Software is prohibited unless
+   explicitly granted in writing.
+
+7. INTELLECTUAL PROPERTY RESERVATION
+
+   7.1 The Software is and remains the exclusive property of the Author.
+
+   7.2 All rights not expressly granted are reserved. No patent, trademark,
+   trade secret, or other intellectual property rights are granted except as
+   explicitly stated in a signed commercial license agreement.
+
+8. TERMINATION
+
+   8.1 Any breach of this license or applicable commercial license agreement
+   automatically terminates any rights granted under this license.
+
+   8.2 Upon termination, you must immediately cease all use and, upon request,
+   certify deletion or destruction of all copies under your control, except as
+   otherwise required by applicable law.
+
+9. ENFORCEMENT AND REMEDIES
+
+   9.1 Unauthorized use may cause irreparable harm. The Author may seek
+   injunctive or equitable relief in addition to any other legal remedies.
+
+   9.2 To the maximum extent permitted by law, the prevailing party in an
+   enforcement action is entitled to recover reasonable legal fees and costs.
+
+10. WARRANTY DISCLAIMER AND LIMITATION OF LIABILITY
+
+   THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTIES OF
+   ANY KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. TO THE MAXIMUM EXTENT
+   PERMITTED BY LAW, THE AUTHOR IS NOT LIABLE FOR ANY INDIRECT, INCIDENTAL,
+   SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR ANY LOSS OF DATA,
+   PROFITS, REVENUE, OR BUSINESS INTERRUPTION, ARISING FROM OR RELATED TO THE
+   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+11. GOVERNING LAW AND JURISDICTION
+
+   This license is governed by the laws of the Republic of Croatia, excluding
+   conflict-of-law rules. The courts in Zagreb, Croatia have exclusive
+   jurisdiction over disputes arising out of or relating to this license or the
+   Software.
+
+12. GENERAL
+
+   12.1 Severability: If any provision is held invalid or unenforceable, the
+   remaining provisions remain in full force and effect.
+
+   12.2 No waiver: Failure to enforce any provision is not a waiver of future
+   enforcement.
+
+   12.3 Entire understanding: This license governs repository access by default.
+   A signed commercial license agreement supersedes this license only for the
+   Licensed Entity and only within the scope of that agreement.
+
+13. COMMERCIAL LICENSING CONTACT
+
+   For commercial licensing inquiries:
+   32225602+DraganMatesic@users.noreply.github.com

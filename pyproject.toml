@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "data_collector"
 version = "0.1.0"
-description = "Framework for collecting data from webpages, API's, documents, free for non-commercial use"
+description = "Enterprise data collection framework under proprietary commercial license"
 readme = "README.md"
 requires-python = ">=3.7"
 license = { file = "LICENSE.txt" }
@@ -36,6 +36,14 @@ dependencies = [
     "cryptography"
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.9.0",
+    "mypy>=1.10.0"
+]
+
 [tool.setuptools]
 include-package-data = true
 zip-safe = false
@@ -47,3 +55,10 @@ zip-safe = false
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "integration: tests that require external infrastructure (database/services)"
+]
