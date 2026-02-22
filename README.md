@@ -2,23 +2,49 @@
 
 ## Overview
 
-**Data Collector** is a modular and extensible Python framework designed to streamline web scraping, data extraction, and ETL workflows. It supports configurable pipelines tailored to country-specific requirements.
+Data Collector is an enterprise-oriented Python framework for data ingestion, ETL, web scraping, API integration, and operational orchestration.
 
-The framework is built with performance, flexibility, and safety in mind, allowing controlled updates, parallel processing, and safe data transfer routines.
+The repository includes both current implementation documentation and planned architecture documentation. Planned components are explicitly labeled in docs.
 
-## Features
+## Documentation Entry Point
 
-- Modular architecture with clear separation: scraper, parser, and transfer
-- Multi-country support with pluggable configurations
-- Custom framework for safe, testable ETL operations
-- Python package with defined entry points
-- Production-tested in a corporate environment
+Primary documentation index:
+
+- [docs/1. index.md](docs/1.%20index.md)
+- Documentation governance and validation rules are defined in [docs/51. contributing.md](docs/51.%20contributing.md).
 
 ## Requirements
 
-Python 3.9+
+- Python 3.9+
 
 Install dependencies:
-```terminal 
+
+```bash
 pip install -r requirements.txt
+```
+
+Install development dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+## Testing
+
+Canonical automated tests are stored at repository-level `tests/`:
+
+- `tests/unit/` (mandatory)
+- `tests/quality/` (mandatory)
+- `tests/integration/` (optional/manual)
+
+Run mandatory local gate:
+
+```bash
+pytest tests/unit tests/quality --cov=data_collector --cov-report=term-missing --cov-report=xml
+```
+
+Run optional integration suite:
+
+```bash
+pytest tests/integration -m integration
 ```

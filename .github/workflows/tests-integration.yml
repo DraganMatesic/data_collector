@@ -1,0 +1,45 @@
+name: tests-integration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tests-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: data_collector_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d data_collector_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run integration tests
+        env:
+          DC_DB_MAIN_USERNAME: postgres
+          DC_DB_MAIN_PASSWORD: postgres
+          DC_DB_MAIN_DATABASENAME: data_collector_test
+          DC_DB_MAIN_IP: 127.0.0.1
+          DC_DB_MAIN_PORT: 5432
+        run: pytest tests/integration -m integration
