@@ -5,36 +5,9 @@ from sqlalchemy import (
 )
 
 
-from enum import IntEnum
 from sqlalchemy.orm import relationship
 from data_collector.tables.shared import Base
 from data_collector.utilities.database.main import auto_increment_column
-
-
-class RunStatus(IntEnum):
-    NOT_RUNNING = 0
-    RUNNING = 1
-    STOPPED = 2
-
-
-class CommandFlag(IntEnum):
-    PENDING = 0
-    EXECUTED = 1
-    NOT_EXECUTED = 2
-
-
-class CommandList(IntEnum):
-    START = 1
-    STOP = 2
-    RESTART = 3
-    ENABLE = 4
-    DISABLE = 5
-
-
-class FatalFlag(IntEnum):
-    FAILED_TO_START = 1
-    ALERT_SENT = 2
-    UNEXPECTED_BEHAVIOR = 3
 
 
 class CodebookCommandFlags(Base):
@@ -44,6 +17,9 @@ class CodebookCommandFlags(Base):
     __tablename__ = 'c_cmd_flags'
     id = Column(BigInteger, primary_key=True, comment="Command flag ID")
     description = Column(String(128), comment="Command flag description")
+    sha = Column(String(64), comment="Hash for merge-based seeding")
+    archive = Column(DateTime, comment="Soft delete timestamp")
+    date_created = Column(DateTime, server_default=func.now())
 
 
 class CodebookCommandList(Base):
@@ -54,6 +30,9 @@ class CodebookCommandList(Base):
     id = Column(BigInteger, primary_key=True, comment="Command ID")
     name = Column(String(10), unique=True, comment="Name of command")
     description = Column(String(128), comment="Command description")
+    sha = Column(String(64), comment="Hash for merge-based seeding")
+    archive = Column(DateTime, comment="Soft delete timestamp")
+    date_created = Column(DateTime, server_default=func.now())
 
 
 class CodebookFatalFlags(Base):
@@ -63,6 +42,9 @@ class CodebookFatalFlags(Base):
     __tablename__ = 'c_fatal_flags'
     id = Column(BigInteger, primary_key=True, comment="Fatal flag ID")
     description = Column(String(128), comment="Fatal flag description")
+    sha = Column(String(64), comment="Hash for merge-based seeding")
+    archive = Column(DateTime, comment="Soft delete timestamp")
+    date_created = Column(DateTime, server_default=func.now())
 
 
 class CodebookRunStatus(Base):
@@ -72,6 +54,9 @@ class CodebookRunStatus(Base):
     __tablename__ = 'c_run_status'
     id = Column(BigInteger, primary_key=True, comment="Run status ID")
     description = Column(String(128), comment="Run status description")
+    sha = Column(String(64), comment="Hash for merge-based seeding")
+    archive = Column(DateTime, comment="Soft delete timestamp")
+    date_created = Column(DateTime, server_default=func.now())
 
 
 class AppGroups(Base):

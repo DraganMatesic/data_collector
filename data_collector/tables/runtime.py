@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, String, BigInteger,
-    DateTime, Integer, text
+    DateTime, Integer, text, func
 )
 
 from data_collector.tables.shared import Base
@@ -11,6 +11,9 @@ class CodebookRuntimeCodes(Base):
 
     id = Column(BigInteger, primary_key=True)
     description = Column(String(128))
+    sha = Column(String(64), comment="Hash for merge-based seeding")
+    archive = Column(DateTime, comment="Soft delete timestamp")
+    date_created = Column(DateTime, server_default=func.now())
 
 
 # Summary of single runtime cycle
