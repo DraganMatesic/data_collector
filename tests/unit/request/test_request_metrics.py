@@ -3,7 +3,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from data_collector.utilities.request import RequestMetrics
 
-
 # ---------------------------------------------------------------------------
 # record_request
 # ---------------------------------------------------------------------------
@@ -19,7 +18,9 @@ def test_record_request_tracks_domain_timing() -> None:
     m = RequestMetrics()
     m.record_request("example.com", None, 200, 100.0)
     m.record_request("example.com", None, 200, 200.0)
-    assert len(m._domain_timings["example.com"]) == 2
+    logger = logging.getLogger("test")
+    stats = m.log_stats(logger)
+    assert stats["by_domain"]["example.com"]["count"] == 2
 
 
 def test_record_request_tracks_status_codes() -> None:
@@ -27,9 +28,11 @@ def test_record_request_tracks_status_codes() -> None:
     m.record_request("example.com", None, 200, 100.0)
     m.record_request("example.com", None, 200, 100.0)
     m.record_request("example.com", None, 503, 100.0)
-    codes = m._domain_status_codes["example.com"]
-    assert codes[200] == 2
-    assert codes[503] == 1
+    logger = logging.getLogger("test")
+    stats = m.log_stats(logger)
+    codes = stats["by_domain"]["example.com"]["status_codes"]
+    assert codes["200"] == 2
+    assert codes["503"] == 1
 
 
 def test_record_request_tracks_proxy_stats() -> None:
@@ -37,15 +40,19 @@ def test_record_request_tracks_proxy_stats() -> None:
     m.record_request("example.com", "DE:8080", 200, 100.0)
     m.record_request("example.com", "DE:8080", 200, 150.0)
     m.record_request("example.com", "US:9090", 200, 200.0)
-    assert m._proxy_stats["DE:8080"]["count"] == 2
-    assert m._proxy_stats["DE:8080"]["success"] == 2
-    assert m._proxy_stats["US:9090"]["count"] == 1
+    logger = logging.getLogger("test")
+    stats = m.log_stats(logger)
+    assert stats["by_proxy"]["DE:8080"]["count"] == 2
+    assert stats["by_proxy"]["DE:8080"]["success"] == 2
+    assert stats["by_proxy"]["US:9090"]["count"] == 1
 
 
 def test_record_request_no_proxy_uses_direct() -> None:
     m = RequestMetrics()
     m.record_request("example.com", None, 200, 100.0)
-    assert "direct" in m._proxy_stats
+    logger = logging.getLogger("test")
+    stats = m.log_stats(logger)
+    assert "direct" in stats["by_proxy"]
 
 
 # ---------------------------------------------------------------------------
@@ -86,10 +93,10 @@ def test_error_rate_percent_with_mixed_results() -> None:
 
 
 def test_record_error_updates_circuit_breaker() -> None:
-    m = RequestMetrics()
+    m = RequestMetrics(max_target_failures=1, min_distinct_proxies=1)
+    assert m.is_target_unhealthy("https://example.com/page") is False
     m.record_error("example.com", "proxy1", "timeout")
-    assert "example.com" in m._target_failures
-    assert m._target_failures["example.com"]["failures"] == 1
+    assert m.is_target_unhealthy("https://example.com/page") is True
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +198,8 @@ def test_reservoir_sampling_bounded() -> None:
     m = RequestMetrics()
     for i in range(5000):
         m.record_request("example.com", None, 200, float(i))
-    assert len(m._domain_timings["example.com"]) == RequestMetrics.RESERVOIR_SIZE
+    # Reservoir size is an internal implementation detail; access needed for bound check
+    assert len(m._domain_timings["example.com"]) == RequestMetrics.RESERVOIR_SIZE  # pyright: ignore[reportPrivateUsage]
 
 
 # ---------------------------------------------------------------------------
