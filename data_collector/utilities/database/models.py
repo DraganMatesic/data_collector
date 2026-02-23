@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 
 class BaseModel:
@@ -10,11 +10,11 @@ class BaseModel:
 
     def __repr__(self) -> str:
         cls = self.__class__.__name__
-        table = getattr(self, "__table__", None)
+        table: Any = getattr(self, "__table__", None)
         if table is not None:
             attrs = ", ".join(
                 f"{col.name}={getattr(self, col.name)!r}"
-                for col in cast(Any, table).columns
+                for col in table.columns
             )
             return f"<{cls}({attrs})>"
         return f"<{cls}>"

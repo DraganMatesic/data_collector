@@ -5,14 +5,13 @@ import re
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, TypeVar, cast
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from sqlalchemy import Column, String, and_, create_engine, select, text
 from sqlalchemy.engine import Engine, Result
-from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.inspection import inspect
-from sqlalchemy.orm import Query, Session, sessionmaker
+from sqlalchemy.orm import Query, Session, declared_attr, sessionmaker
 from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy.sql.visitors import traverse
 
@@ -23,39 +22,40 @@ from data_collector.settings.main import (
     DatabaseType,
     MainDatabaseSettings,
 )
-from data_collector.utilities.database.columns import auto_increment_column as _auto_increment_column
-from data_collector.utilities.database.models import BaseModel as _BaseModel
+from data_collector.utilities.database.columns import auto_increment_column as auto_increment_column
+from data_collector.utilities.database.models import BaseModel as BaseModel
 from data_collector.utilities.functions import runtime
 
-T = TypeVar("T", bound=object)
+logger = logging.getLogger(__name__)
 
-# Backward-compatible re-exports used by existing imports.
-auto_increment_column = _auto_increment_column
-BaseModel = _BaseModel
-
-
-def database_classes(db_type: DatabaseType) -> type["BaseDBConnector"]:
-    return {
-        DatabaseType.POSTGRES: Postgres,
-        DatabaseType.MSSQL: MsSQL,
-    }[db_type]
+__all__ = [
+    "auto_increment_column",
+    "BaseModel",
+    "BaseDBConnector",
+    "Database",
+    "MsSQL",
+    "Postgres",
+    "SHAHashableMixin",
+    "Stats",
+    "database_classes",
+]
 
 
 def extract_models_from_query(query: Query[Any]) -> set[type[Any]]:
     models: set[type[Any]] = set()
 
-    # Step 1: Extract explicitly queried models
+    # Step 1: Extract explicitly queried models via public API
     try:
-        compile_state = query._compile_state()
-        for ent in compile_state._entities:
-            if hasattr(ent, "entity_zero"):
-                ez = ent.entity_zero
-                if isinstance(ez, AliasedClass):
-                    models.add(ez._sa_class_manager.class_)
-                elif ez is not None and hasattr(ez, "class_"):
-                    models.add(ez.class_)
+        for desc in query.column_descriptions:
+            entity = desc.get("entity")
+            if entity is None:
+                continue
+            if isinstance(entity, AliasedClass):
+                models.add(entity._sa_class_manager.class_)
+            elif isinstance(entity, type) and hasattr(entity, "__table__"):
+                models.add(entity)
     except Exception as e:
-        print(f"[extract_models] Warning during compile_state parsing: {e}")
+        logger.warning("extract_models: column_descriptions parsing failed: %s", e)
 
     # Step 2: Traverse SQL tree and find FromClause with mappers
     def visit(element: Any) -> None:
@@ -70,7 +70,7 @@ def extract_models_from_query(query: Query[Any]) -> set[type[Any]]:
     try:
         traverse(query.statement, {}, {"clause": visit})
     except Exception as e:
-        print(f"[extract_models] Warning during statement traversal: {e}")
+        logger.warning("extract_models: statement traversal failed: %s", e)
 
     return models
 
@@ -94,11 +94,11 @@ class BaseDBConnector(ABC):
         self.settings_class = settings.__class__.__name__
         self.database_name = settings.database_name
 
-        dbname_required = [DatabaseDriver.POSTGRES, DatabaseDriver.ODBC]
-        if settings.database_driver in [DatabaseDriver.POSTGRES, DatabaseDriver.ODBC] and not self.database_name:
+        drivers_requiring_dbname = [DatabaseDriver.POSTGRES, DatabaseDriver.ODBC]
+        if settings.database_driver in drivers_requiring_dbname and not self.database_name:
             raise ValueError(
                 f"database_name must be defined in {self.settings_class} "
-                f"setting for drivers {[x.value for x in dbname_required]}."
+                f"setting for drivers {[x.value for x in drivers_requiring_dbname]}."
             )
 
         self.conn_string = self.build_conn_string()
@@ -166,6 +166,14 @@ class MsSQL(BaseDBConnector):
                 raise ValueError(f"Unsupported driver '{self.settings.database_driver.value}' for MsSQL.")
 
 
+def database_classes(db_type: DatabaseType) -> type[BaseDBConnector]:
+    _map: dict[DatabaseType, type[BaseDBConnector]] = {
+        DatabaseType.POSTGRES: Postgres,
+        DatabaseType.MSSQL: MsSQL,
+    }
+    return _map[db_type]
+
+
 class Database:
     def __init__(self, settings: DatabaseSettings, app_id: str | None = None, **kwargs: Any) -> None:
         """
@@ -196,6 +204,9 @@ class Database:
 
         # Default logger
         self.logger: logging.Logger = logging.getLogger(__name__)
+
+        # Lazily initialized system DB connection for dependency registration
+        self._system_db: Database | None = None
 
         # Construct engine
         self.engine: Engine = self.engine_construct(**kwargs)
@@ -259,8 +270,9 @@ class Database:
         - Infers the database table automatically from the ORM class of the first object.
 
         Args:
-            objs (Union[T, List[T]]):
-                A single ORM object or list of ORM objects (typically from an external source like an WEB, API, File).
+            objs:
+                A single ORM object or list of ORM objects
+                (typically from an external source like a web page, API, or file).
                 Each object must have a unique field (default: 'sha') for comparison.
 
             session (sqlalchemy.orm.Session):
@@ -293,7 +305,8 @@ class Database:
                 If not provided, the current time is used.
 
             logger (logging.Logger, optional):
-                Logger instance for reporting warnings such as duplicate comparison keys.
+                Logger instance used for this call only (e.g. duplicate comparison key warnings).
+                Falls back to the instance logger if not provided. Does not mutate instance state.
 
             compare_key (Union[str, List[str], Tuple[str, ...]], optional):
                 One or more attribute names (str or list/tuple of str) used to
@@ -309,19 +322,17 @@ class Database:
         Raises:
             AttributeError: If objects do not contain the specified `compare_key`.
         """
-        if logger is not None:
-            self.logger = logger
+        log = logger or self.logger
 
         # No input data = nothing to do
         if not objs:
             return Stats() if stats else None
 
         # Normalize to list
-        if not isinstance(objs, (list, tuple)):
-            objs = [objs]
+        obj_list: list[Any] = [objs] if not isinstance(objs, (list, tuple)) else [*objs]
 
         # Refuse lists of primitives early
-        if all(isinstance(o, str) for o in objs):
+        if all(isinstance(o, str) for o in obj_list):
             raise TypeError(
                 "merge() received possibly a list of hash strings."
                 "Pass the original ORM objects, or call hash_list(..., inplace=True)."
@@ -329,22 +340,25 @@ class Database:
 
         # Registering models
         if self.settings.map_objects and self.app_id:
-            models_used = self._track_models_from_objects(objs)
+            models_used = self._track_models_from_objects(obj_list)
             self.register_models(models_used)
 
         # Infer db_table from first ORM object if not explicitly provided
-        db_table = objs[0].__class__
+        db_table: type[Any] = obj_list[0].__class__
 
         # Fetch existing records from the database
-        result = session.execute(select(db_table).filter(filters if filters is not None else text('')))
+        stmt: Any = select(db_table)
+        if filters is not None:
+            stmt = stmt.filter(filters)
+        result = session.execute(stmt)
         db_data = result.scalars().all()
 
         # Compute differences by compare_key (default 'sha')
         to_insert, to_remove = runtime.obj_diff(
-            new_objs=objs,
+            new_objs=obj_list,
             existing_objs=db_data,
             compare_key=compare_key,
-            logger=self.logger
+            logger=log
         )
 
         # Process deletions or archiving
@@ -365,7 +379,7 @@ class Database:
                 inserted=len(to_insert),
                 archived=len(to_remove) if update and not delete else 0,
                 deleted=len(to_remove) if delete else 0,
-                number_of_records=len(objs)
+                number_of_records=len(obj_list)
             )
         return None
 
@@ -397,7 +411,7 @@ class Database:
         if not object_list:
             return
 
-        archive_time = archive_date or datetime.now()
+        archive_time = archive_date or datetime.now(UTC)
 
         for obj in object_list:
             setattr(obj, archive_col, archive_time)
@@ -421,26 +435,33 @@ class Database:
 
     def update_insert(
             self,
-            objects: T | list[T],
+            objects: Any,
             session: Session,
             filter_cols: list[str],
             commit: bool = True
     ) -> Stats:
         """
-        Performs update or insert of row based if filter columns values are matched or not.
-        Dependency mapping runs only once per table/model even if it is a batch.
-        """
-        if not isinstance(objects, (list, tuple)):
-            objects = [objects]
+        Performs update or insert of rows based on whether filter column values are matched.
 
-        if not objects:
+        Args:
+            objects: A single ORM object or list/tuple of ORM objects.
+            session: The SQLAlchemy session to use.
+            filter_cols: Column names used to match existing records.
+            commit: If True (default), commits the session after all operations.
+
+        Returns:
+            Stats with counts for inserted, updated, and total records.
+        """
+        obj_list: list[Any] = [objects] if not isinstance(objects, (list, tuple)) else [*objects]
+
+        if not obj_list:
             return Stats()
 
-        stats = Stats(number_of_records=len(objects))
-        db_table = objects[0].__class__
+        stats = Stats(number_of_records=len(obj_list))
+        db_table: type[Any] = obj_list[0].__class__
         tracked_models: set[type[Any]] = set()
 
-        for obj in objects:
+        for obj in obj_list:
             filters = and_(*[(getattr(db_table, col) == getattr(obj, col)) for col in filter_cols])
             existing_records = self.query(session, db_table, map_objects=True, track_models=tracked_models).filter(
                 filters).all()
@@ -451,7 +472,7 @@ class Database:
             else:
                 for record in existing_records:
                     changed = False
-                    for col, value in vars(obj).items():
+                    for col, value in cast(dict[str, Any], vars(obj)).items():
                         if col == "_sa_instance_state" or not hasattr(record, col):
                             continue
                         current_value = getattr(record, col)
@@ -478,23 +499,24 @@ class Database:
             map_objects: bool = True,
             track_models: set[type[Any]] | None = None
     ) -> Query[Any]:
-        query_obj = session.query(*models)
+        query_obj: Query[Any] = session.query(*models)
 
         if map_objects and self.settings.map_objects:
+            extracted_models: set[type[Any]]
             try:
                 extracted_models = extract_models_from_query(query_obj)
             except Exception as e:
-                print(f"[map_objects] Failed to extract models: {e}")
+                self.logger.warning("Failed to extract models: %s", e)
                 extracted_models = set()
 
-            all_models = set(models) | extracted_models
+            all_models: set[type[Any]] = set(models) | extracted_models
 
             if track_models is not None:
                 track_models.update(all_models)
             elif self.app_id:
                 self.register_models(all_models)
 
-        return cast(Query[Any], query_obj)
+        return query_obj
 
     def execute(self, sql_text: str, session: Session) -> Result[Any]:
         """
@@ -546,6 +568,12 @@ class Database:
     From here are class method that are used for mapping database objects during execution
     """
 
+    def _get_system_db(self) -> "Database":
+        """Returns a cached Database instance connected to the main system database."""
+        if self._system_db is None:
+            self._system_db = Database(MainDatabaseSettings())
+        return self._system_db
+
     def _track_models_from_objects(self, objects: list[Any] | tuple[Any, ...]) -> set[type[Any]]:
         """
         Collects distinct ORM model classes from the given object list.
@@ -581,7 +609,7 @@ class Database:
             return "unknown"
 
         except Exception as e:
-            print(f"[get_model_source_type] Error for {model.__name__}: {e}")
+            self.logger.warning("get_model_source_type failed for %s: %s", model.__name__, e)
             return "unknown"
 
     def get_routine_type(self, object_name: str, schema: str | None = None) -> str:
@@ -674,11 +702,10 @@ class Database:
         Registers ORM objects
         """
         from data_collector.tables import AppDbObjects
-        # Creating session to database where data_collector is deployed
-        system_db = Database(MainDatabaseSettings())
+        system_db = self._get_system_db()
         with system_db.create_session() as session:
-            dependancies: list[Any] = []
-            dependancies_hash: list[str] = []
+            dependencies: list[Any] = []
+            dependencies_hash: list[str] = []
 
             for db_object in db_objects:
                 try:
@@ -699,17 +726,17 @@ class Database:
                     record_hash = cast(str, record_data["sha"])
 
                     # Create AppDbObjects entry
-                    if record_hash not in dependancies_hash:
+                    if record_hash not in dependencies_hash:
                         dependency = AppDbObjects(**record_data)
-                        dependancies.append(dependency)
-                        dependancies_hash.append(record_hash)
+                        dependencies.append(dependency)
+                        dependencies_hash.append(record_hash)
 
                 except Exception as e:
                     self.logger.error(f"[register_models] Failed to register {db_object.__name__}: {e}")
 
-            if dependancies:
+            if dependencies:
                 filters = and_(AppDbObjects.app_id == self.app_id)
-                system_db.merge(dependancies, session, filters=filters)
+                system_db.merge(dependencies, session, filters=filters)
 
 
     def register_sql_objects(self, objects: list[dict[str, Any]]) -> None:
@@ -717,11 +744,11 @@ class Database:
         Registers non-ORM objects (from raw SQL) using same logic as register_models.
         """
         from data_collector.tables import AppDbObjects
-        system_db = Database(MainDatabaseSettings())
+        system_db = self._get_system_db()
 
         with system_db.create_session() as session:
-            dependancies: list[Any] = []
-            dependancies_hash: list[str] = []
+            dependencies: list[Any] = []
+            dependencies_hash: list[str] = []
 
             for obj in objects:
                 try:
@@ -746,15 +773,15 @@ class Database:
                     )
                     record_hash = cast(str, record_data["sha"])
 
-                    if record_hash not in dependancies_hash:
-                        dependancies.append(AppDbObjects(**record_data))
-                        dependancies_hash.append(record_hash)
+                    if record_hash not in dependencies_hash:
+                        dependencies.append(AppDbObjects(**record_data))
+                        dependencies_hash.append(record_hash)
                 except Exception as e:
                     self.logger.error(f"[register_sql_objects] Failed to register {obj}: {e}")
 
-            if dependancies:
+            if dependencies:
                 filters = and_(AppDbObjects.app_id == self.app_id)
-                system_db.merge(dependancies, session, filters=filters)
+                system_db.merge(dependencies, session, filters=filters)
 
     def prepare_dependency_record(
             self,
@@ -779,7 +806,7 @@ class Database:
         }
 
         record_hash = str(runtime.make_hash(record_data))
-        record_data.update({"sha": record_hash, "last_use_date": datetime.now()})
+        record_data.update({"sha": record_hash, "last_use_date": datetime.now(UTC)})
         return record_data
 
 
@@ -793,12 +820,10 @@ class SHAHashableMixin:
         return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
 
     @staticmethod
+    @abstractmethod
     def get_hash_keys() -> list[str]:
-        """
-        Returns a list of field names to be hashed.
-        Must be overridden in child class.
-        """
-        raise NotImplementedError("get_hash_keys() must be implemented by child class.")
+        """Returns a list of field names to be hashed. Must be overridden in child class."""
+        ...
 
     def compute_sha(self) -> str:
         """
@@ -806,7 +831,8 @@ class SHAHashableMixin:
         """
         return cast(str, runtime.make_hash(self.get_fields(), on_keys=self.get_hash_keys()))
 
-    def __init__(self, *args: Any, auto_sha: bool = True, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, **kwargs: Any) -> None:
+        auto_sha: bool = kwargs.pop("auto_sha", True)
+        super().__init__(**kwargs)
         if auto_sha and not getattr(self, "sha", None):
             self.sha = self.compute_sha()
