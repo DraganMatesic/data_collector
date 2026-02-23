@@ -91,6 +91,46 @@ def test_retry_on_503_then_success() -> None:
 
 
 @respx.mock
+def test_has_errors_false_after_successful_retry() -> None:
+    route = respx.get("https://example.com/page")
+    route.side_effect = [
+        httpx.Response(503),
+        httpx.Response(200, text="OK"),
+    ]
+    with patch("time.sleep"):
+        req = Request(timeout=5, retries=2)
+        req.get("https://example.com/page")
+    assert req.has_errors() is False
+
+
+@respx.mock
+def test_should_abort_false_after_successful_retry() -> None:
+    route = respx.get("https://example.com/page")
+    route.side_effect = [
+        httpx.Response(503),
+        httpx.Response(200, text="OK"),
+    ]
+    logger = logging.getLogger("test")
+    with patch("time.sleep"):
+        req = Request(timeout=5, retries=2)
+        req.get("https://example.com/page")
+    assert req.should_abort(logger) is False
+
+
+@respx.mock
+def test_has_errors_false_after_exception_then_success() -> None:
+    route = respx.get("https://example.com/page")
+    route.side_effect = [
+        httpx.ReadTimeout("timeout"),
+        httpx.Response(200, text="OK"),
+    ]
+    with patch("time.sleep"):
+        req = Request(timeout=5, retries=2)
+        req.get("https://example.com/page")
+    assert req.has_errors() is False
+
+
+@respx.mock
 def test_no_retry_on_401() -> None:
     route = respx.get("https://example.com/page").mock(return_value=httpx.Response(401))
     req = Request(timeout=5, retries=3)
@@ -166,6 +206,29 @@ def test_request_count_incremented_on_success() -> None:
     req = Request(timeout=5, retries=0)
     req.get("https://example.com/page")
     assert req.request_count == 1
+
+
+@respx.mock
+def test_request_count_includes_timeout() -> None:
+    respx.get("https://example.com/page").mock(side_effect=httpx.ReadTimeout("timeout"))
+    with patch("time.sleep"):
+        req = Request(timeout=5, retries=0)
+        req.get("https://example.com/page")
+    assert req.request_count == 1
+
+
+@respx.mock
+def test_request_count_includes_all_retry_attempts() -> None:
+    route = respx.get("https://example.com/page")
+    route.side_effect = [
+        httpx.ReadTimeout("timeout"),
+        httpx.Response(200, text="OK"),
+    ]
+    with patch("time.sleep"):
+        req = Request(timeout=5, retries=2)
+        req.get("https://example.com/page")
+    # 1 failed attempt (exception) + 1 successful attempt = 2
+    assert req.request_count == 2
 
 
 # ---------------------------------------------------------------------------

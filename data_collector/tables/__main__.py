@@ -7,6 +7,7 @@ Usage:
     python -m data_collector.tables setup       # Create tables + seed data
 """
 import argparse
+import sys
 
 from data_collector.tables.deploy import Deploy
 
@@ -30,12 +31,18 @@ def main() -> None:
         deploy.create_tables()
         print("Tables created successfully.")
     elif args.command == "populate":
-        deploy.populate_tables()
-        print("Codebook data seeded successfully.")
+        if deploy.populate_tables():
+            print("Codebook data seeded successfully.")
+        else:
+            print("Codebook seeding completed with errors. Check logs.", file=sys.stderr)
+            sys.exit(1)
     elif args.command == "setup":
         deploy.create_tables()
-        deploy.populate_tables()
-        print("Tables created and codebook data seeded successfully.")
+        if deploy.populate_tables():
+            print("Tables created and codebook data seeded successfully.")
+        else:
+            print("Tables created but codebook seeding had errors. Check logs.", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
