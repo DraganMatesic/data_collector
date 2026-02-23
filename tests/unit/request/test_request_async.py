@@ -6,7 +6,6 @@ import respx
 
 from data_collector.utilities.request import Request
 
-
 # ---------------------------------------------------------------------------
 # Async GET / POST
 # ---------------------------------------------------------------------------
@@ -82,5 +81,6 @@ async def test_async_no_retry_on_401() -> None:
     route = respx.get("https://example.com/page").mock(return_value=httpx.Response(401))
     req = Request(timeout=5, retries=3)
     resp = await req.async_get("https://example.com/page")
+    assert resp is not None
     assert resp.status_code == 401
     assert route.call_count == 1

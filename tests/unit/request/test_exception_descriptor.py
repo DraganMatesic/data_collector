@@ -2,7 +2,6 @@ from datetime import datetime, timedelta
 
 from data_collector.utilities.request import ExceptionDescriptor
 
-
 # ---------------------------------------------------------------------------
 # add_error
 # ---------------------------------------------------------------------------

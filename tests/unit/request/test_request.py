@@ -7,7 +7,6 @@ import respx
 
 from data_collector.utilities.request import Request, RequestMetrics
 
-
 # ---------------------------------------------------------------------------
 # Basic GET / POST
 # ---------------------------------------------------------------------------
@@ -40,7 +39,7 @@ def test_set_headers_applied() -> None:
     req = Request(timeout=5, retries=0)
     req.set_headers({"X-Custom": "value"})
     req.get("https://example.com/page")
-    assert route.calls[0].request.headers["x-custom"] == "value"
+    assert route.calls.last.request.headers["x-custom"] == "value"
 
 
 @respx.mock
@@ -50,7 +49,7 @@ def test_reset_headers() -> None:
     req.set_headers({"X-Custom": "value"})
     req.reset_headers()
     req.get("https://example.com/page")
-    assert "x-custom" not in route.calls[0].request.headers
+    assert "x-custom" not in route.calls.last.request.headers
 
 
 @respx.mock
@@ -59,7 +58,7 @@ def test_set_cookies_applied() -> None:
     req = Request(timeout=5, retries=0)
     req.set_cookies({"session": "abc123"})
     req.get("https://example.com/page")
-    assert "session=abc123" in str(route.calls[0].request.headers.get("cookie", ""))
+    assert "session=abc123" in str(route.calls.last.request.headers.get("cookie", ""))
 
 
 @respx.mock
@@ -68,7 +67,7 @@ def test_set_auth_applied() -> None:
     req = Request(timeout=5, retries=0)
     req.set_auth("user", "pass")
     req.get("https://example.com/page")
-    assert "authorization" in route.calls[0].request.headers
+    assert "authorization" in route.calls.last.request.headers
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +144,7 @@ def test_no_retry_on_403() -> None:
     route = respx.get("https://example.com/page").mock(return_value=httpx.Response(403))
     req = Request(timeout=5, retries=3)
     resp = req.get("https://example.com/page")
+    assert resp is not None
     assert resp.status_code == 403
     assert route.call_count == 1
 
@@ -154,6 +154,7 @@ def test_no_retry_on_404() -> None:
     route = respx.get("https://example.com/page").mock(return_value=httpx.Response(404))
     req = Request(timeout=5, retries=3)
     resp = req.get("https://example.com/page")
+    assert resp is not None
     assert resp.status_code == 404
     assert route.call_count == 1
 
@@ -161,8 +162,8 @@ def test_no_retry_on_404() -> None:
 @respx.mock
 def test_retry_exponential_backoff() -> None:
     respx.get("https://example.com/page").mock(return_value=httpx.Response(503))
-    sleep_calls = []
-    with patch("time.sleep", side_effect=lambda s: sleep_calls.append(s)):
+    sleep_calls: list[int] = []
+    with patch("time.sleep", side_effect=sleep_calls.append):
         req = Request(timeout=5, retries=3, backoff_factor=2)
         req.get("https://example.com/page")
     # Backoff: 2^0=1, 2^1=2, 2^2=4 (3 retries after first attempt)
@@ -368,7 +369,7 @@ def test_save_html(tmp_path: Path) -> None:
     req.get("https://example.com/page")
     save_path = str(tmp_path / "output.html")
     req.save_html(save_path)
-    assert Path(save_path).read_text() == "<html>test</html>"
+    assert Path(save_path).read_text(encoding="utf-8") == "<html>test</html>"
 
 
 @respx.mock
@@ -378,7 +379,7 @@ def test_save_responses_auto(tmp_path: Path) -> None:
     req.get("https://example.com/page")
     saved_files = list(tmp_path.iterdir())
     assert len(saved_files) == 1
-    assert saved_files[0].read_text() == "<html>saved</html>"
+    assert saved_files[0].read_text(encoding="utf-8") == "<html>saved</html>"
 
 
 # ---------------------------------------------------------------------------
@@ -447,3 +448,81 @@ def test_metrics_record_error_on_timeout() -> None:
         req = Request(timeout=5, retries=0, metrics=metrics)
         req.get("https://example.com/page")
     assert metrics.timeout_err == 1
+
+
+# ---------------------------------------------------------------------------
+# set_proxy in _build_client_kwargs
+# ---------------------------------------------------------------------------
+
+@respx.mock
+def test_set_proxy_applied() -> None:
+    respx.get("https://example.com/page").mock(return_value=httpx.Response(200))
+    metrics = RequestMetrics()
+    logger = logging.getLogger("test")
+    req = Request(timeout=5, retries=0, metrics=metrics)
+    req.set_proxy("http://user:pass@proxy.example.com:8080")
+    req.get("https://example.com/page")
+    stats = metrics.log_stats(logger)
+    # Proxy key recorded in metrics proves set_proxy() flows through _build_client_kwargs
+    assert "proxy.example.com:8080" in stats["by_proxy"]
+
+
+@respx.mock
+def test_set_proxy_cleared() -> None:
+    respx.get("https://example.com/page").mock(return_value=httpx.Response(200))
+    metrics = RequestMetrics()
+    logger = logging.getLogger("test")
+    req = Request(timeout=5, retries=0, metrics=metrics)
+    req.set_proxy("http://proxy:8080")
+    req.set_proxy(None)
+    req.get("https://example.com/page")
+    stats = metrics.log_stats(logger)
+    # Without proxy, metrics records as "direct"
+    assert "direct" in stats["by_proxy"]
+
+
+# ---------------------------------------------------------------------------
+# _auto_save_response JSON extension
+# ---------------------------------------------------------------------------
+
+@respx.mock
+def test_auto_save_json_extension(tmp_path: Path) -> None:
+    respx.get("https://example.com/api/data").mock(
+        return_value=httpx.Response(200, json={"k": "v"}, headers={"content-type": "application/json"})
+    )
+    req = Request(timeout=5, retries=0, save_responses=True, save_dir=str(tmp_path))
+    req.get("https://example.com/api/data")
+    saved_files = list(tmp_path.iterdir())
+    assert len(saved_files) == 1
+    assert saved_files[0].suffix == ".json"
+
+
+
+# ---------------------------------------------------------------------------
+# _get_proxy_key credential stripping (verified through metrics)
+# ---------------------------------------------------------------------------
+
+@respx.mock
+def test_proxy_key_strips_credentials() -> None:
+    respx.get("https://example.com/page").mock(return_value=httpx.Response(200))
+    metrics = RequestMetrics()
+    logger = logging.getLogger("test")
+    req = Request(timeout=5, retries=0, metrics=metrics)
+    req.set_proxy("http://user:s3cret@proxy.example.com:8080")
+    req.get("https://example.com/page")
+    stats = metrics.log_stats(logger)
+    # Credentials must be stripped — only host:port in metrics
+    assert "proxy.example.com:8080" in stats["by_proxy"]
+    assert "user" not in str(stats["by_proxy"])
+    assert "s3cret" not in str(stats["by_proxy"])
+
+
+@respx.mock
+def test_proxy_key_direct_without_proxy() -> None:
+    respx.get("https://example.com/page").mock(return_value=httpx.Response(200))
+    metrics = RequestMetrics()
+    logger = logging.getLogger("test")
+    req = Request(timeout=5, retries=0, metrics=metrics)
+    req.get("https://example.com/page")
+    stats = metrics.log_stats(logger)
+    assert "direct" in stats["by_proxy"]
