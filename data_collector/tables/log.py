@@ -1,12 +1,13 @@
-from sqlalchemy import (
-    Column, String, BigInteger, ForeignKey,
-    DateTime, Integer, Text, text, func
-)
+"""Logging ORM tables and related codebooks."""
+
+
+from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, String, Text, func, text
 
 from data_collector.tables.apps import Apps
-from data_collector.tables.shared import Base
 from data_collector.tables.runtime import Runtime
-from data_collector.utilities.database.main import auto_increment_column
+from data_collector.tables.shared import Base
+from data_collector.utilities.database.columns import auto_increment_column
+
 
 class CodebookLogLevel(Base):
     """
@@ -21,6 +22,8 @@ class CodebookLogLevel(Base):
 
 
 class Logs(Base):
+    """Application log records persisted in database."""
+
     __tablename__ = 'logs'
 
     id = auto_increment_column()

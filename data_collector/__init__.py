@@ -1,1 +1,1 @@
-from . import tables
+"""Top-level package for data_collector."""

@@ -1,59 +1,54 @@
-import os
+"""Database driver pre-flight checks and optional Oracle client initialization."""
+
+from __future__ import annotations
+
 import importlib
+import logging
+import os
+
 from data_collector.utilities.functions import runtime
 
-def initialize_oracle_client(logger=None) -> bool:
-    """
-    Initializes the Oracle Instant Client if the environment variable `oracle_client` is set.
 
-    oracledb runs in thin mode by default (no Oracle Client needed).
-    If `oracle_client` env var is set, it switches to thick mode for advanced features.
-
-    :param logger: Optional logger for error or debug output
-    :return: True if initialization succeeded, False otherwise
-    """
+def initialize_oracle_client(logger: logging.Logger | None = None) -> bool:
+    """Initialize Oracle thick mode when `ORACLE_CLIENT` is configured."""
     try:
-        oracledb = importlib.import_module('oracledb')
+        oracledb = importlib.import_module("oracledb")
     except ImportError:
         if logger:
             logger.error("oracledb module not installed.")
         return False
 
-    oracle_path = os.getenv('oracle_client')
-
+    oracle_path = os.getenv("ORACLE_CLIENT")
     if not oracle_path:
         if logger:
-            logger.info("No 'oracle_client' env var set. Using oracledb thin mode (no Oracle Client required).")
+            logger.info("No 'ORACLE_CLIENT' env var set. Using oracledb thin mode.")
         return True
 
     try:
         oracledb.init_oracle_client(lib_dir=oracle_path)
         if logger:
-            logger.info(f"Oracle thick mode initialized from: {oracle_path}")
+            logger.info("Oracle thick mode initialized from: %s", oracle_path)
         return True
-    except oracledb.ProgrammingError as e:
-        # Already initialized is a known safe case
-        if "already initialized" in str(e):
+    except Exception as exc:
+        if "already initialized" in str(exc):
             if logger:
                 logger.info("Oracle client was already initialized.")
             return True
         if logger:
-            logger.error(f"Oracle client initialization failed: {e}")
+            logger.error("Oracle client initialization failed: %s", exc)
         return False
 
 
-def check_oracle(logger=None):
-    # checks if oracledb lib is installed
-    if not runtime.is_module_available('oracledb'):
+def check_oracle(logger: logging.Logger | None = None) -> None:
+    """Validate Oracle driver availability and optional client initialization."""
+    if not runtime.is_module_available("oracledb"):
         raise ImportError("oracledb is required but not installed. Install it with `pip install oracledb`.")
 
-    # checks if oracle client is initialized
     if not initialize_oracle_client(logger=logger):
-            raise RuntimeError("Oracle initialization failed or 'oracle_client' env variable missing.")
+        raise RuntimeError("Oracle initialization failed or 'ORACLE_CLIENT' env variable missing.")
 
 
-def check_pyodbc():
-    # checks if pyodbc lib is installed
-    if not runtime.is_module_available('pyodbc'):
+def check_pyodbc() -> None:
+    """Validate pyodbc availability."""
+    if not runtime.is_module_available("pyodbc"):
         raise ImportError("pyodbc is required but not installed. Install it with `pip install pyodbc`.")
-
