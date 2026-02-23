@@ -1,13 +1,24 @@
+"""Core app lifecycle and dependency-mapping ORM models."""
+
+
 from sqlalchemy import (
-    Column, String, BigInteger, ForeignKey, ForeignKeyConstraint,
-    PrimaryKeyConstraint, Boolean, DateTime, Integer, Text, text,
-    func
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    PrimaryKeyConstraint,
+    String,
+    Text,
+    func,
+    text,
 )
-
-
 from sqlalchemy.orm import relationship
+
 from data_collector.tables.shared import Base
-from data_collector.utilities.database.main import auto_increment_column
+from data_collector.utilities.database.columns import auto_increment_column
 
 
 class CodebookCommandFlags(Base):

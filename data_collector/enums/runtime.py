@@ -1,19 +1,27 @@
+"""Runtime and lifecycle enums used by app orchestration."""
+
 from enum import IntEnum
 
 
 class RunStatus(IntEnum):
+    """High-level application runtime status."""
+
     NOT_RUNNING = 0
     RUNNING = 1
     STOPPED = 2
 
 
 class FatalFlag(IntEnum):
+    """Fatal-state classification values."""
+
     FAILED_TO_START = 1
     APP_STOPPED_ALERT_SENT = 2
     UNEXPECTED_BEHAVIOUR = 3
 
 
 class RuntimeExitCode(IntEnum):
+    """Canonical runtime exit-code values."""
+
     FINISHED = 0
     MANAGER_EXIT = 1
     ORPHAN_PID = 2

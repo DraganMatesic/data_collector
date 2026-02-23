@@ -21,30 +21,21 @@ classifiers = [
 
 
 
-dependencies = [
-    "psycopg2-binary",
-    "sqlalchemy",
-    "python-dotenv",
-    "line_profiler",
-    "pika",
-    "requests",
-    "bs4",
-    "lxml",
-    "python-dateutil",
-    "pandas",
-    "html5lib",
-    "pydantic>=2.11.4",
-    "pydantic-settings>=2.9.1",
-    "cryptography"
-]
+dynamic = ["dependencies"]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.9.0",
-    "mypy>=1.10.0"
+    "mypy>=1.10.0",
+    "pytest-asyncio>=0.24.0",
+    "respx>=0.22.0",
+    "zeep>=4.2.0"
 ]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools]
 include-package-data = true
@@ -64,3 +55,49 @@ addopts = "-ra"
 markers = [
     "integration: tests that require external infrastructure (database/services)"
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.pylint."messages_control"]
+disable = [
+    # Convention: ruff handles line length and import sorting
+    "C0103",   # invalid-name — module-level variables, examples use lowercase
+    "C0114",   # missing-module-docstring — not required for all modules
+    "C0115",   # missing-class-docstring — ORM models, enums, TypedDicts
+    "C0116",   # missing-function-docstring — internal/private functions
+    "C0301",   # line-too-long — ruff E501 handles this
+    "C0325",   # superfluous-parens — false positive on chained comparisons
+    "C0414",   # useless-import-alias — PEP 484 explicit re-export pattern (X as X)
+    "C0415",   # import-outside-toplevel — circular import guards in database module
+    # Error: SQLAlchemy false positives
+    "E0213",   # no-self-argument — @declared_attr / @hybrid_property
+    "E1101",   # no-member — SQLAlchemy metaclass (__table__)
+    "E1102",   # not-callable — func.now() is callable
+    # Refactor: complexity thresholds too strict for framework code
+    "R0401",   # cyclic-import — SQLAlchemy table/database module circulars
+    "R0902",   # too-many-instance-attributes
+    "R0903",   # too-few-public-methods — ORM data models
+    "R0904",   # too-many-public-methods
+    "R0912",   # too-many-branches
+    "R0913",   # too-many-arguments
+    "R0914",   # too-many-locals
+    "R0917",   # too-many-positional-arguments
+    "R1705",   # no-else-return — explicit elif/else improves readability
+    "R1720",   # no-else-raise — same rationale
+    # Warning
+    "W0105",   # pointless-string-statement — section separators
+    "W0212",   # protected-access — SQLAlchemy internals introspection
+    "W0718",   # broad-exception-caught — HTTP retry loops need broad catch
+    "W1203",   # logging-fstring-interpolation — structlog uses f-strings
+]
+
+[tool.mypy]
+strict = true

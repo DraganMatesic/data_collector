@@ -1,4 +1,7 @@
-from sqlalchemy import Column, String, BigInteger, DateTime, func
+"""Notification-related codebook ORM tables."""
+
+
+from sqlalchemy import BigInteger, Column, DateTime, String, func
 
 from data_collector.tables.shared import Base
 

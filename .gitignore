@@ -10,3 +10,4 @@ code-workspace
 .vscode/
 .venv/
 .claude/
+.pylint_latest.txt

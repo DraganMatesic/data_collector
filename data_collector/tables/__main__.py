@@ -7,12 +7,12 @@ Usage:
     python -m data_collector.tables setup       # Create tables + seed data
 """
 import argparse
-import sys
 
 from data_collector.tables.deploy import Deploy
 
 
 def main() -> None:
+    """Parse CLI command and execute deployment actions."""
     parser = argparse.ArgumentParser(
         prog="python -m data_collector.tables",
         description="Database deployment and codebook seeding",

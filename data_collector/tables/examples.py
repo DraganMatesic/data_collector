@@ -1,11 +1,11 @@
-from sqlalchemy import (
-    Column, String,
-    DateTime, Integer, Date, func
-)
+"""Example ORM table used in documentation and demos."""
 
+
+from sqlalchemy import Column, Date, DateTime, Integer, String, func
 
 from data_collector.tables.shared import Base
-from data_collector.utilities.database.main import auto_increment_column
+from data_collector.utilities.database.columns import auto_increment_column
+
 
 class ExampleTable(Base):
     """
