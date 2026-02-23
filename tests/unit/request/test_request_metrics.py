@@ -67,6 +67,24 @@ def test_record_error_bad_status_code() -> None:
     assert m.bad_status_code_err == 1
 
 
+def test_record_error_increments_request_count() -> None:
+    m = RequestMetrics()
+    m.record_error("example.com", None, "timeout")
+    m.record_error("example.com", None, "proxy")
+    assert m.request_count == 2
+
+
+def test_error_rate_percent_with_mixed_results() -> None:
+    m = RequestMetrics()
+    m.record_request("example.com", None, 200, 100.0)
+    m.record_error("example.com", None, "timeout")
+    logger = logging.getLogger("test")
+    stats = m.log_stats(logger)
+    assert stats["total_requests"] == 2
+    assert stats["total_errors"] == 1
+    assert stats["error_rate_percent"] == 50.0
+
+
 def test_record_error_updates_circuit_breaker() -> None:
     m = RequestMetrics()
     m.record_error("example.com", "proxy1", "timeout")
