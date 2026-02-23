@@ -38,7 +38,6 @@ def database_classes(db_type: DatabaseType) -> type["BaseDBConnector"]:
     return {
         DatabaseType.POSTGRES: Postgres,
         DatabaseType.MSSQL: MsSQL,
-        DatabaseType.ORACLE: Oracle
     }[db_type]
 
 
@@ -165,15 +164,6 @@ class MsSQL(BaseDBConnector):
                 return f"mssql+pyodbc://{self.settings.username}:{self.settings.password}@{host}/{self.database_name}?driver={odbc_driver}"
             else:
                 raise ValueError(f"Unsupported driver '{self.settings.database_driver.value}' for MsSQL.")
-
-
-class Oracle(BaseDBConnector):
-    def build_conn_string(self) -> str:
-        unsupported = [AuthMethods.WINDOWS, AuthMethods.KERBEROS]
-        if self.auth_type in unsupported:
-            raise ValueError(f"{self.auth_type.value} authentication is not supported for Oracle.")
-        else:
-            return f"oracle+oracledb://{self.settings.username}:{self.settings.password}@{self.settings.ip}:{self.settings.port}/{self.settings.sidname}"
 
 
 class Database:
@@ -598,7 +588,6 @@ class Database:
         """
         Returns the type of routine (procedure/function) in the connected database.
 
-        - For Oracle: queries ALL_OBJECTS
         - For PostgreSQL: queries information_schema.routines
         - For MSSQL: queries sys.objects
 
@@ -607,19 +596,7 @@ class Database:
         db_type = self.settings.database_type
 
         with self.engine.connect() as conn:
-            if db_type == DatabaseType.ORACLE:
-                query = f"""
-                SELECT OBJECT_TYPE FROM ALL_OBJECTS
-                WHERE OBJECT_NAME = :name
-                {"AND OWNER = :schema" if schema else ""}
-                """
-                params = {"name": object_name}
-                if schema:
-                    params["schema"] = schema
-                result = conn.execute(text(query), params).fetchone()
-                return result[0] if result else "unknown"
-
-            elif db_type == DatabaseType.POSTGRES:
+            if db_type == DatabaseType.POSTGRES:
                 query = """
                 SELECT routine_type
                 FROM information_schema.routines
@@ -664,8 +641,6 @@ class Database:
             return "public"
         elif self.settings.database_type == DatabaseType.MSSQL:
             return "dbo"
-        elif self.settings.database_type == DatabaseType.ORACLE:
-            return self.settings.username.upper() if self.settings.username else "unknown"
         else:
             return "unknown"
 
