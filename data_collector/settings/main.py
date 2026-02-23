@@ -13,14 +13,12 @@ class DatabaseType(StrEnum):
 
     POSTGRES = "Postgres"
     MSSQL = "MsSQL"
-    ORACLE = "Oracle"
 
 
 class DatabaseDriver(StrEnum):
     """Supported DBAPI drivers."""
 
     POSTGRES = 'psycopg2'
-    ORACLE = 'oracledb'
     ODBC = 'pyodbc'
 
     @classmethod
@@ -78,9 +76,6 @@ class DatabaseSettings(BaseSettings):
 
     # MSSQL Windows ODBC driver to use
     odbc_driver: str = 'ODBC+Driver+17+for+SQL+Server'
-
-    # SID (System Identifier) Oracle database instance name
-    sidname: str | None = None
 
     # Flag that enables mapping of database object of apps that depends on them during execution
     map_objects: bool | None = False
