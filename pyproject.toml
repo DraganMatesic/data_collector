@@ -97,7 +97,13 @@ disable = [
     "W0212",   # protected-access — SQLAlchemy internals introspection
     "W0718",   # broad-exception-caught — HTTP retry loops need broad catch
     "W1203",   # logging-fstring-interpolation — structlog uses f-strings
+    "W0621",   # redefined-outer-name — parameter names like `logger` shadow module-level
+    "W2301",   # unnecessary-ellipsis — abstract method bodies use `...`
 ]
+
+[tool.pyright]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
 
 [tool.mypy]
 strict = true
