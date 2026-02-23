@@ -46,8 +46,13 @@ class Deploy:
         self.drop_tables()
         self.create_tables()
 
-    def populate_tables(self) -> None:
-        """Insert/update codebook seed rows using SHA merge flow."""
+    def populate_tables(self) -> bool:
+        """Insert/update codebook seed rows using SHA merge flow.
+
+        Returns:
+            True if all codebooks seeded successfully, False on any error.
+        """
+        success = True
         with self.database.create_session() as session:
             seed_data: list[SeedData] = []
 
@@ -107,4 +112,7 @@ class Deploy:
                     bulk_hash(seed.data)
                     self.database.merge(seed.data, session)
                 except Exception as exc:
+                    success = False
                     self.logger.error("Failed to populate %s: %s", seed.data_label, exc)
+
+        return success

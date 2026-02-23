@@ -21,6 +21,7 @@ from typing import Any, TypedDict, cast
 from urllib.parse import urlparse
 
 import httpx
+import requests
 import zeep
 from zeep.exceptions import Fault, TransportError
 from zeep.transports import Transport
@@ -193,6 +194,7 @@ class RequestMetrics:
         """Record an HTTP error. Called by Request._make_request() on exception."""
         proxy_key = proxy or "direct"
         with self._lock:
+            self.request_count += 1
             counter_name = f"{error_type}_err"
             if hasattr(self, counter_name):
                 setattr(self, counter_name, getattr(self, counter_name) + 1)
@@ -460,6 +462,7 @@ class Request:
 
                 # Success
                 if 200 <= status < 300:
+                    self._last_request_time = datetime.now()
                     if self._save_responses:
                         self._auto_save_response(url)
                     return self.response
@@ -479,6 +482,7 @@ class Request:
                 return self.response
 
             except Exception as exc:
+                self.request_count += 1
                 error_type, retryable = self._classify_exception(exc)
                 self._record_error(error_type, str(exc), url)
                 if retryable and attempt < self._retries:
@@ -514,6 +518,7 @@ class Request:
                 status = self.response.status_code
 
                 if 200 <= status < 300:
+                    self._last_request_time = datetime.now()
                     if self._save_responses:
                         self._auto_save_response(url)
                     return self.response
@@ -530,6 +535,7 @@ class Request:
                 return self.response
 
             except Exception as exc:
+                self.request_count += 1
                 error_type, retryable = self._classify_exception(exc)
                 self._record_error(error_type, str(exc), url)
                 if retryable and attempt < self._retries:
@@ -761,16 +767,26 @@ class Request:
         Returns:
             zeep.Client instance.
         """
-        session = httpx.Client(**self._build_client_kwargs())
-        # Zeep requires a requests-compatible session; use zeep's own transport
-        # with timeout from our config
-        transport = Transport(timeout=self._timeout, operation_timeout=self._timeout)  # type: ignore[no-untyped-call]
+        session = requests.Session()
+        if self._headers:
+            session.headers.update(self._headers)
+        if self._cookies:
+            session.cookies.update(self._cookies)  # type: ignore[arg-type]
+        if self._auth:
+            session.auth = self._auth
+        if self._proxy:
+            session.proxies = {"http": self._proxy, "https": self._proxy}
+
+        transport = Transport(
+            timeout=self._timeout,
+            operation_timeout=self._timeout,
+            session=session,
+        )  # type: ignore[no-untyped-call]
         cache = kwargs.pop("cache", False)
         if cache:
             transport.cache = zeep.cache.InMemoryCache()  # type: ignore[no-untyped-call]
 
         self._soap_client = zeep.Client(wsdl_url, transport=transport, **kwargs)  # type: ignore[no-untyped-call]
-        session.close()
         return self._soap_client
 
     def soap_call(self, service_method: Any, raise_faults: bool = False, **params: Any) -> Any:
