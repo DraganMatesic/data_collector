@@ -11,14 +11,16 @@ Checks:
 - Legacy namespace/path patterns that violate documentation contracts
 """
 
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+import contextlib
 import re
 import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, cast
 from urllib.parse import unquote
-
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCS_DIR = ROOT / "docs"
@@ -326,23 +328,18 @@ def check_unlabeled_missing_paths(files: list[Path]) -> list[Issue]:
 def is_legacy_namespace_exception(rule: str, line: str) -> bool:
     lowered = line.lower()
 
-    if API_APPS_ROUTE_RE.search(lowered):
-        if rule in {"legacy_apps_path_template", "legacy_apps_path_concrete"}:
-            return True
+    legacy_rules = {"legacy_apps_path_template", "legacy_apps_path_concrete"}
 
-    if "apiversion:" in lowered and "apps/v" in lowered:
-        if rule in {"legacy_apps_path_template", "legacy_apps_path_concrete"}:
-            return True
+    if API_APPS_ROUTE_RE.search(lowered) and rule in legacy_rules:
+        return True
 
-    if "apps.py" in lowered:
-        if rule in {"legacy_apps_path_template", "legacy_apps_path_concrete"}:
-            return True
+    if "apiversion:" in lowered and "apps/v" in lowered and rule in legacy_rules:
+        return True
 
-    if "apps.app" in lowered:
-        if rule in {"legacy_apps_path_template", "legacy_apps_path_concrete"}:
-            return True
+    if "apps.py" in lowered and rule in legacy_rules:
+        return True
 
-    return False
+    return "apps.app" in lowered and rule in legacy_rules
 
 
 def check_legacy_namespace(files: list[Path]) -> list[Issue]:
@@ -371,10 +368,8 @@ def check_legacy_namespace(files: list[Path]) -> list[Issue]:
 
 
 def main() -> int:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except AttributeError:
-        pass
+    with contextlib.suppress(AttributeError):
+        cast(Any, sys.stdout).reconfigure(encoding="utf-8", errors="replace")
 
     files = iter_target_files()
     if not files:
