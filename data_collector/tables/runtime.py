@@ -1,12 +1,15 @@
-from sqlalchemy import (
-    Column, String, BigInteger,
-    DateTime, Integer, text, func
-)
+"""Runtime-related ORM tables and runtime codebook."""
+
+
+from sqlalchemy import BigInteger, Column, DateTime, Integer, String, func, text
 
 from data_collector.tables.shared import Base
-from data_collector.utilities.database.main import auto_increment_column
+from data_collector.utilities.database.columns import auto_increment_column
+
 
 class CodebookRuntimeCodes(Base):
+    """Codebook table containing known runtime exit-code descriptions."""
+
     __tablename__ = 'c_runtime_codes'
 
     id = Column(BigInteger, primary_key=True)
@@ -18,6 +21,8 @@ class CodebookRuntimeCodes(Base):
 
 # Summary of single runtime cycle
 class Runtime(Base):
+    """Summary of a single runtime cycle for one app."""
+
     __tablename__ = 'runtime'
     r"""
     :param runtime: it is datetime.now() 256 hashed value that represents single runtime cycle of an app.
@@ -48,5 +53,7 @@ class Runtime(Base):
     exit_code = Column(Integer, server_default=text("0"))
     date_created = Column(DateTime, server_default=text("NOW()"))
 
-    def __eq__(self, other):
-        return self.runtime == other.runtime
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Runtime):
+            return False
+        return getattr(self, "runtime", None) == getattr(other, "runtime", None)

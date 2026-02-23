@@ -1,7 +1,10 @@
-from sqlalchemy import MetaData
+"""Shared SQLAlchemy declarative base and naming conventions."""
 
+
+from sqlalchemy import MetaData
 from sqlalchemy.orm import DeclarativeBase
-from data_collector.utilities.database import main
+
+from data_collector.utilities.database.models import BaseModel
 
 NAMING_CONVENTION = {
     "ix": "ix_%(table_name)s_%(column_0_label)s",
@@ -11,5 +14,7 @@ NAMING_CONVENTION = {
     "pk": "pk_%(table_name)s"
 }
 
-class Base(DeclarativeBase, main.BaseModel):
+class Base(DeclarativeBase, BaseModel):
+    """Common declarative base for all ORM tables."""
+
     metadata = MetaData(naming_convention=NAMING_CONVENTION)

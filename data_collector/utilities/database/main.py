@@ -1,41 +1,40 @@
-import os
-import re
+"""Database abstraction, connectors, merge workflow, and dependency mapping."""
+
 import logging
+import re
 import warnings
-from enum import Enum
-from datetime import datetime
-from dataclasses import dataclass
-
-from sqlalchemy.orm import Session
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, TypeVar, cast
 
-from sqlalchemy import create_engine, BigInteger
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import Column, String, and_, create_engine, select, text
 from sqlalchemy.engine import Engine, Result
-from sqlalchemy.sql.elements import TextClause
 from sqlalchemy.ext.declarative import declared_attr
-from data_collector.utilities.functions import runtime
-from typing import Optional, List, Union, Tuple, TypeVar
-
-from sqlalchemy import (
-    text, select, Column, String, and_, Identity, Sequence
-)
-
-from data_collector.settings.main import (DatabaseSettings,
-                                          DatabaseType,
-                                          AuthMethods,
-                                          DatabaseDriver,
-                                          MainDatabaseSettings)
-
-from sqlalchemy.orm import Query
-from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy.inspection import inspect
+from sqlalchemy.orm import Query, Session, sessionmaker
+from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy.sql.visitors import traverse
-from typing import Set, Type
 
-T = TypeVar("T")
+from data_collector.settings.main import (
+    AuthMethods,
+    DatabaseDriver,
+    DatabaseSettings,
+    DatabaseType,
+    MainDatabaseSettings,
+)
+from data_collector.utilities.database.columns import auto_increment_column as _auto_increment_column
+from data_collector.utilities.database.models import BaseModel as _BaseModel
+from data_collector.utilities.functions import runtime
 
-def database_classes(db_type: DatabaseType):
+T = TypeVar("T", bound=object)
+
+# Backward-compatible re-exports used by existing imports.
+auto_increment_column = _auto_increment_column
+BaseModel = _BaseModel
+
+
+def database_classes(db_type: DatabaseType) -> type["BaseDBConnector"]:
     return {
         DatabaseType.POSTGRES: Postgres,
         DatabaseType.MSSQL: MsSQL,
@@ -43,8 +42,8 @@ def database_classes(db_type: DatabaseType):
     }[db_type]
 
 
-def extract_models_from_query(query: Query) -> Set[Type]:
-    models: Set[Type] = set()
+def extract_models_from_query(query: Query[Any]) -> set[type[Any]]:
+    models: set[type[Any]] = set()
 
     # Step 1: Extract explicitly queried models
     try:
@@ -54,13 +53,13 @@ def extract_models_from_query(query: Query) -> Set[Type]:
                 ez = ent.entity_zero
                 if isinstance(ez, AliasedClass):
                     models.add(ez._sa_class_manager.class_)
-                elif hasattr(ez, "class_"):
+                elif ez is not None and hasattr(ez, "class_"):
                     models.add(ez.class_)
     except Exception as e:
         print(f"[extract_models] Warning during compile_state parsing: {e}")
 
     # Step 2: Traverse SQL tree and find FromClause with mappers
-    def visit(element):
+    def visit(element: Any) -> None:
         try:
             mapper = inspect(element, raiseerr=False)
             if mapper and hasattr(mapper, "class_"):
@@ -75,29 +74,6 @@ def extract_models_from_query(query: Query) -> Set[Type]:
         print(f"[extract_models] Warning during statement traversal: {e}")
 
     return models
-
-
-def auto_increment_column(database_type: DatabaseType = None, primary_key=True, **col_kw):
-    """
-    Return a Column that behaves like an autoincrement PK
-    on the given database backend (Postgres, Oracle, SQL Server).
-    Extra kwargs are forwarded to Column().
-    """
-    if database_type is None:
-        main_db_settings = MainDatabaseSettings()
-        database_type = main_db_settings.database_type
-
-    if database_type is DatabaseType.POSTGRES:
-        return Column(BigInteger, Identity(always=True), primary_key=primary_key, **col_kw)
-
-    elif database_type is DatabaseType.ORACLE:
-        # Oracle still needs an explicit Sequence object
-        return Column(BigInteger, Sequence("SEQ_%(column_0_name)s"), primary_key=primary_key, **col_kw)
-
-    else:
-        # SQL Server, MySQL, SQLite …
-        # plain autoincrement works everywhere else
-        return Column(BigInteger, autoincrement=True, primary_key=primary_key, **col_kw)
 
 
 @dataclass
@@ -121,14 +97,18 @@ class BaseDBConnector(ABC):
 
         dbname_required = [DatabaseDriver.POSTGRES, DatabaseDriver.ODBC]
         if settings.database_driver in [DatabaseDriver.POSTGRES, DatabaseDriver.ODBC] and not self.database_name:
-            raise ValueError(f"database_name must be defined in {self.settings_class} setting for drivers {[x.value for x in dbname_required]}.")
+            raise ValueError(
+                f"database_name must be defined in {self.settings_class} "
+                f"setting for drivers {[x.value for x in dbname_required]}."
+            )
 
         self.conn_string = self.build_conn_string()
 
 
     @abstractmethod
-    def build_conn_string(self):
-        pass
+    def build_conn_string(self) -> str:
+        """Build database connection string for target backend."""
+        raise NotImplementedError
 
     def get_host(self) -> str:
         # Checks if it will use ip:port or server name based on available env variables
@@ -147,7 +127,7 @@ class BaseDBConnector(ABC):
             )
 
 class Postgres(BaseDBConnector):
-    def build_conn_string(self):
+    def build_conn_string(self) -> str:
         host = self.get_host()
 
         # WINDOWS AUTHENTICATION
@@ -167,7 +147,7 @@ class Postgres(BaseDBConnector):
 
 
 class MsSQL(BaseDBConnector):
-    def build_conn_string(self):
+    def build_conn_string(self) -> str:
         host = self.get_host()
 
         # Checks if user want so use different ODBC Driver
@@ -188,7 +168,7 @@ class MsSQL(BaseDBConnector):
 
 
 class Oracle(BaseDBConnector):
-    def build_conn_string(self):
+    def build_conn_string(self) -> str:
         unsupported = [AuthMethods.WINDOWS, AuthMethods.KERBEROS]
         if self.auth_type in unsupported:
             raise ValueError(f"{self.auth_type.value} authentication is not supported for Oracle.")
@@ -197,7 +177,7 @@ class Oracle(BaseDBConnector):
 
 
 class Database:
-    def __init__(self, settings: DatabaseSettings, app_id:str=None, **kwargs):
+    def __init__(self, settings: DatabaseSettings, app_id: str | None = None, **kwargs: Any) -> None:
         """
         Initializes a database interface with SQLAlchemy engine and optional object mapping.
 
@@ -222,15 +202,15 @@ class Database:
         self.settings_class = settings.__class__.__name__
 
         # App_id of caller
-        self.app_id: str = app_id
+        self.app_id: str | None = app_id
 
         # Default logger
-        self.logger = logging.getLogger(__name__)
+        self.logger: logging.Logger = logging.getLogger(__name__)
 
         # Construct engine
         self.engine: Engine = self.engine_construct(**kwargs)
 
-    def engine_construct(self, **kwargs) -> Engine:
+    def engine_construct(self, **kwargs: Any) -> Engine:
         """
         Constructs and returns a SQLAlchemy Engine.
 
@@ -269,17 +249,17 @@ class Database:
 
     def merge(
             self,
-            objs:Union[T, List[T]],
+            objs: Any,
             session: Session,
-            filters:TextClause=text(''),
-            archive_col:str='archive',
-            delete:bool=False,
-            update:bool=True,
-            stats:bool=False,
-            archive_date=None,
-            logger=None,
-            compare_key:Union[str, List[str], Tuple[str, ...]]='sha'
-    ) -> Optional[Stats]:
+            filters: Any | None = None,
+            archive_col: str = 'archive',
+            delete: bool = False,
+            update: bool = True,
+            stats: bool = False,
+            archive_date: datetime | None = None,
+            logger: logging.Logger | None = None,
+            compare_key: str | list[str] | tuple[str, ...] = 'sha'
+    ) -> Stats | None:
         """
         Synchronizes a list of ORM objects (from the web) with the corresponding table in the database.
 
@@ -310,11 +290,13 @@ class Database:
                 Mutually exclusive with `update`.
 
             update (bool, optional):
-                If True, records missing from `objs` will have their `archive_col` updated with the current time or `archive_date`.
+                If True, records missing from `objs` will have their `archive_col`
+                updated with the current time or `archive_date`.
                 Mutually exclusive with `delete`.
 
             stats (bool, optional):
-                If True, returns a Stats object summarizing the number of inserts, deletions/archives, and total records processed.
+                If True, returns a Stats object summarizing the number of inserts,
+                deletions/archives, and total records processed.
 
             archive_date (datetime, optional):
                 A specific datetime to use when marking records as archived.
@@ -324,9 +306,11 @@ class Database:
                 Logger instance for reporting warnings such as duplicate comparison keys.
 
             compare_key (Union[str, List[str], Tuple[str, ...]], optional):
-                One or more attribute names (str or list/tuple of str) used to uniquely identify each object.
-                The field is used to determine uniqueness (default is 'sha') for comparison between new and existing objects.
-                If sha column doesn't exist list 1 or more columns names that are used for comparison of new and old objects
+                One or more attribute names (str or list/tuple of str) used to
+                uniquely identify each object. The field is used to determine
+                uniqueness (default is 'sha') for comparison between new and
+                existing objects. If sha column doesn't exist list 1 or more
+                columns names that are used for comparison of new and old objects
 
         Returns:
             Optional[Stats]: A Stats object with counts for inserted, archived, deleted, and total records.
@@ -362,7 +346,7 @@ class Database:
         db_table = objs[0].__class__
 
         # Fetch existing records from the database
-        result = session.execute(select(db_table).filter(filters))
+        result = session.execute(select(db_table).filter(filters if filters is not None else text('')))
         db_data = result.scalars().all()
 
         # Compute differences by compare_key (default 'sha')
@@ -393,8 +377,9 @@ class Database:
                 deleted=len(to_remove) if delete else 0,
                 number_of_records=len(objs)
             )
+        return None
 
-    def delete(self, object_list, session: Session):
+    def delete(self, object_list: list[Any], session: Session) -> None:
         """
         Deletes a list of ORM objects from the database.
         Caller must commit afterward.
@@ -409,7 +394,13 @@ class Database:
             models_used = self._track_models_from_objects(object_list)
             self.register_models(models_used)
 
-    def archive(self, object_list, session: Session, archive_col='archive', archive_date=None):
+    def archive(
+        self,
+        object_list: list[Any],
+        session: Session,
+        archive_col: str = 'archive',
+        archive_date: datetime | None = None,
+    ) -> None:
         """
         Updates archive_col on existing DB records with a timestamp.
         """
@@ -426,7 +417,7 @@ class Database:
             models_used = self._track_models_from_objects(object_list)
             self.register_models(models_used)
 
-    def bulk_insert(self, object_list, session: Session):
+    def bulk_insert(self, object_list: list[Any], session: Session) -> None:
         """
         Performs a bulk insert of ORM objects using add_all.
         Caller is responsible for committing.
@@ -440,9 +431,9 @@ class Database:
 
     def update_insert(
             self,
-            objects: Union[T, List[T]],
+            objects: T | list[T],
             session: Session,
-            filter_cols: List[str],
+            filter_cols: list[str],
             commit: bool = True
     ) -> Stats:
         """
@@ -457,7 +448,7 @@ class Database:
 
         stats = Stats(number_of_records=len(objects))
         db_table = objects[0].__class__
-        tracked_models = set()
+        tracked_models: set[type[Any]] = set()
 
         for obj in objects:
             filters = and_(*[(getattr(db_table, col) == getattr(obj, col)) for col in filter_cols])
@@ -493,10 +484,10 @@ class Database:
     def query(
             self,
             session: Session,
-            *models: Type,
+            *models: type[Any],
             map_objects: bool = True,
-            track_models: Optional[Set[Type]] = None
-    ) -> Query:
+            track_models: set[type[Any]] | None = None
+    ) -> Query[Any]:
         query_obj = session.query(*models)
 
         if map_objects and self.settings.map_objects:
@@ -513,9 +504,9 @@ class Database:
             elif self.app_id:
                 self.register_models(all_models)
 
-        return query_obj
+        return cast(Query[Any], query_obj)
 
-    def execute(self, sql_text: str, session: Session) -> Result:
+    def execute(self, sql_text: str, session: Session) -> Result[Any]:
         """
         Executes only stored procedures, functions, or package procedures.
         Automatically registers used routine in AppDbObjects.
@@ -558,19 +549,20 @@ class Database:
             "object_type": routine_type.lower()
         }
         self.register_sql_objects([record_data])
+        return session.execute(text(sql_text))
 
 
     """
     From here are class method that are used for mapping database objects during execution
     """
 
-    def _track_models_from_objects(self, objects: List[object]) -> Set[Type]:
+    def _track_models_from_objects(self, objects: list[Any] | tuple[Any, ...]) -> set[type[Any]]:
         """
         Collects distinct ORM model classes from the given object list.
         """
         return {obj.__class__ for obj in objects if hasattr(obj, "__class__")}
 
-    def get_model_source_type(self, model) -> str:
+    def get_model_source_type(self, model: Any) -> str:
         """
         Tries to identify whether the model is mapped to a table, view,
         function, or procedure. Defaults to 'unknown' if not identifiable.
@@ -602,7 +594,7 @@ class Database:
             print(f"[get_model_source_type] Error for {model.__name__}: {e}")
             return "unknown"
 
-    def get_routine_type(self, object_name: str, schema: Optional[str] = None) -> str:
+    def get_routine_type(self, object_name: str, schema: str | None = None) -> str:
         """
         Returns the type of routine (procedure/function) in the connected database.
 
@@ -619,7 +611,7 @@ class Database:
                 query = f"""
                 SELECT OBJECT_TYPE FROM ALL_OBJECTS
                 WHERE OBJECT_NAME = :name
-                {f"AND OWNER = :schema" if schema else ""}
+                {"AND OWNER = :schema" if schema else ""}
                 """
                 params = {"name": object_name}
                 if schema:
@@ -659,14 +651,11 @@ class Database:
             else:
                 raise NotImplementedError(f"Routine type check not implemented for {db_type}")
 
-    def get_schema_for_model(self, db_object) -> str:
+    def get_schema_for_model(self, db_object: Any) -> str:
         """
         Returns the schema for a given model, with DBMS-specific fallbacks.
         """
-        if isinstance(db_object, str):
-            schema = db_object
-        else:
-            schema = db_object.__table__.schema
+        schema = db_object if isinstance(db_object, str) else db_object.__table__.schema
 
         if schema:
             return schema
@@ -676,24 +665,21 @@ class Database:
         elif self.settings.database_type == DatabaseType.MSSQL:
             return "dbo"
         elif self.settings.database_type == DatabaseType.ORACLE:
-            return self.settings.username.upper()  # Oracle default schema is username
+            return self.settings.username.upper() if self.settings.username else "unknown"
         else:
             return "unknown"
 
-    def extract_database_and_schema(self, db_object) -> Tuple[Optional[str], str]:
+    def extract_database_and_schema(self, db_object: Any) -> tuple[str | None, str]:
         """
         Extracts (database_name, schema_name) from a model's __table__.schema definition.
         Handles special formats like 'OtherDB..' in MSSQL, where '..' implies default schema (dbo).
         """
-        if isinstance(db_object, str):
-            schema = db_object
-        else:
-            schema = db_object.__table__.schema
+        schema = db_object if isinstance(db_object, str) else db_object.__table__.schema
 
         if schema and '.' in schema:
             parts = schema.split('.')
 
-            # Case: 'OtherDB..' → ['', '', ...] or ['OtherDB', '', 'SomeTable']
+            # Case: 'OtherDB..' â†’ ['', '', ...] or ['OtherDB', '', 'SomeTable']
             if len(parts) == 2:
                 db_name, schema_part = parts
                 schema_part = schema_part or self.get_schema_for_model(db_object)
@@ -704,20 +690,20 @@ class Database:
                 schema_part = parts[1] or self.get_schema_for_model(db_object)
                 return db_name, schema_part
 
-        # No cross-db prefix → use fallback logic
+        # No cross-db prefix â†’ use fallback logic
         return None, self.get_schema_for_model(db_object)
 
 
-    def register_models(self, db_objects: set):
+    def register_models(self, db_objects: set[type[Any]]) -> None:
         """
         Registers ORM objects
         """
         from data_collector.tables import AppDbObjects
         # Creating session to database where data_collector is deployed
-        system_db  = Database(MainDatabaseSettings())
+        system_db = Database(MainDatabaseSettings())
         with system_db.create_session() as session:
-            dependancies = list()
-            dependancies_hash = list()
+            dependancies: list[Any] = []
+            dependancies_hash: list[str] = []
 
             for db_object in db_objects:
                 try:
@@ -726,7 +712,7 @@ class Database:
                     object_type = self.get_model_source_type(db_object)
 
                     # Source info: comes from the engine tied to this model's session (self)
-                    database_name = db_name_override or self.settings.database_name
+                    database_name = db_name_override or self.settings.database_name or ""
 
                     # Prepare data for ORM object
                     record_data = self.prepare_dependency_record(
@@ -735,7 +721,7 @@ class Database:
                         schema=schema,
                         database_name=database_name,
                     )
-                    record_hash = record_data["sha"]
+                    record_hash = cast(str, record_data["sha"])
 
                     # Create AppDbObjects entry
                     if record_hash not in dependancies_hash:
@@ -751,7 +737,7 @@ class Database:
                 system_db.merge(dependancies, session, filters=filters)
 
 
-    def register_sql_objects(self, objects: list[dict]):
+    def register_sql_objects(self, objects: list[dict[str, Any]]) -> None:
         """
         Registers non-ORM objects (from raw SQL) using same logic as register_models.
         """
@@ -759,14 +745,14 @@ class Database:
         system_db = Database(MainDatabaseSettings())
 
         with system_db.create_session() as session:
-            dependancies = []
-            dependancies_hash = []
+            dependancies: list[Any] = []
+            dependancies_hash: list[str] = []
 
             for obj in objects:
                 try:
                     object_name = obj["object_name"]
                     schema = obj["database_schema"] or self.get_schema_for_model(obj["database_schema"] )
-                    database_name = obj["database_name"] or self.settings.database_name
+                    database_name = cast(str | None, obj["database_name"]) or self.settings.database_name or ""
                     object_type = obj["object_type"]
 
                     # Verify actual type if needed
@@ -783,7 +769,7 @@ class Database:
                         schema=schema,
                         database_name=database_name,
                     )
-                    record_hash = record_data["sha"]
+                    record_hash = cast(str, record_data["sha"])
 
                     if record_hash not in dependancies_hash:
                         dependancies.append(AppDbObjects(**record_data))
@@ -801,38 +787,38 @@ class Database:
             object_name: str,
             object_type: str,
             schema: str,
-            database_name: str
-    ) -> dict:
+            database_name: str | None
+    ) -> dict[str, Any]:
         """
         Prepares a fully hashed and timestamped dictionary for AppDbObjects registration.
         """
-        record_data = {
+        record_data: dict[str, Any] = {
             "app_id": self.app_id,
             "server_type": self.settings.database_type.value,
             "server_name": self.settings.server_name,
             "server_ip": self.settings.ip,
-            "database_name": database_name,
+            "database_name": database_name or "",
             "database_schema": schema,
             "object_name": object_name,
             "object_type": object_type
         }
 
-        record_hash = runtime.make_hash(record_data)
+        record_hash = str(runtime.make_hash(record_data))
         record_data.update({"sha": record_hash, "last_use_date": datetime.now()})
         return record_data
 
 
 class SHAHashableMixin:
     @declared_attr
-    def sha(cls):
+    def sha(cls) -> Column[Any]:
         return Column(String(64), index=True)
 
-    def get_fields(self)-> dict:
+    def get_fields(self) -> dict[str, Any]:
         """Return only public attributes for hashing."""
         return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
 
     @staticmethod
-    def get_hash_keys() -> list:
+    def get_hash_keys() -> list[str]:
         """
         Returns a list of field names to be hashed.
         Must be overridden in child class.
@@ -843,24 +829,9 @@ class SHAHashableMixin:
         """
         Computes the SHA value based on defined keys and fields.
         """
-        return runtime.make_hash(self.get_fields(), on_keys=self.get_hash_keys())
+        return cast(str, runtime.make_hash(self.get_fields(), on_keys=self.get_hash_keys()))
 
-    def __init__(self, *args, auto_sha=True, **kwargs):
+    def __init__(self, *args: Any, auto_sha: bool = True, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         if auto_sha and not getattr(self, "sha", None):
             self.sha = self.compute_sha()
-
-
-class BaseModel:
-    def __repr__(self):
-        cls = self.__class__.__name__
-        if hasattr(self, '__table__'):
-            attrs = ', '.join(
-                f"{col.name}={getattr(self, col.name)!r}"
-                for col in self.__table__.columns
-            )
-            return f"<{cls}({attrs})>"
-        return f"<{cls}>"
-
-    def __str__(self):
-        return self.__repr__()
