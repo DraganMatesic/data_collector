@@ -454,31 +454,19 @@ def test_metrics_record_error_on_timeout() -> None:
 # set_proxy in _build_client_kwargs
 # ---------------------------------------------------------------------------
 
-@respx.mock
 def test_set_proxy_applied() -> None:
-    respx.get("https://example.com/page").mock(return_value=httpx.Response(200))
-    metrics = RequestMetrics()
-    logger = logging.getLogger("test")
-    req = Request(timeout=5, retries=0, metrics=metrics)
+    req = Request(timeout=5, retries=0)
     req.set_proxy("http://user:pass@proxy.example.com:8080")
-    req.get("https://example.com/page")
-    stats = metrics.log_stats(logger)
-    # Proxy key recorded in metrics proves set_proxy() flows through _build_client_kwargs
-    assert "proxy.example.com:8080" in stats["by_proxy"]
+    kwargs = req._build_client_kwargs()  # pyright: ignore[reportPrivateUsage]
+    assert kwargs["proxy"] == "http://user:pass@proxy.example.com:8080"
 
 
-@respx.mock
 def test_set_proxy_cleared() -> None:
-    respx.get("https://example.com/page").mock(return_value=httpx.Response(200))
-    metrics = RequestMetrics()
-    logger = logging.getLogger("test")
-    req = Request(timeout=5, retries=0, metrics=metrics)
+    req = Request(timeout=5, retries=0)
     req.set_proxy("http://proxy:8080")
     req.set_proxy(None)
-    req.get("https://example.com/page")
-    stats = metrics.log_stats(logger)
-    # Without proxy, metrics records as "direct"
-    assert "direct" in stats["by_proxy"]
+    kwargs = req._build_client_kwargs()  # pyright: ignore[reportPrivateUsage]
+    assert "proxy" not in kwargs
 
 
 # ---------------------------------------------------------------------------
