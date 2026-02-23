@@ -1,10 +1,11 @@
 import logging
 from unittest.mock import MagicMock, patch
 
-from zeep.exceptions import Fault
+import pytest
+import requests as requests_lib
+from zeep.exceptions import Fault, TransportError
 
 from data_collector.utilities.request import Request
-
 
 # ---------------------------------------------------------------------------
 # create_soap_client
@@ -33,7 +34,7 @@ def test_create_soap_client_applies_session_config() -> None:
         req.set_proxy("http://proxy:8080")
         req.create_soap_client("https://example.com/service?wsdl")
 
-        session = mock_transport.call_args.kwargs["session"]
+        session: requests_lib.Session = mock_transport.call_args.kwargs["session"]
         assert session.headers["X-Api-Key"] == "secret"
         assert session.auth == ("user", "pass")
         assert session.proxies == {"http": "http://proxy:8080", "https": "http://proxy:8080"}
@@ -64,7 +65,7 @@ def test_soap_call_raise_faults() -> None:
     req = Request(timeout=5, retries=0)
     try:
         req.soap_call(mock_method, raise_faults=True, oib="12345")
-        assert False, "Expected Fault"
+        pytest.fail("Expected Fault")
     except Fault:
         pass
     assert req.request_err == 1
@@ -91,3 +92,35 @@ def test_soap_call_records_request_count() -> None:
     req = Request(timeout=5, retries=0)
     req.soap_call(mock_method)
     assert req.request_count == 1
+
+
+# ---------------------------------------------------------------------------
+# TransportError handling
+# ---------------------------------------------------------------------------
+
+def test_soap_call_transport_error() -> None:
+    mock_method = MagicMock(side_effect=TransportError("Connection refused"))
+    req = Request(timeout=5, retries=0)
+    result = req.soap_call(mock_method, id="123")
+    assert result is None
+    assert req.proxy_err == 1
+    logger = logging.getLogger("test")
+    assert req.should_abort(logger, proxy_on=True) is True
+
+
+# ---------------------------------------------------------------------------
+# cache=True branch
+# ---------------------------------------------------------------------------
+
+def test_create_soap_client_with_cache() -> None:
+    with (
+        patch("zeep.Client") as mock_client,
+        patch(_TRANSPORT_PATH) as mock_transport,
+        patch("zeep.cache.InMemoryCache") as mock_cache,
+    ):
+        mock_client.return_value = MagicMock()
+        transport_instance = mock_transport.return_value
+        req = Request(timeout=5, retries=0)
+        req.create_soap_client("https://example.com/service?wsdl", cache=True)
+        mock_cache.assert_called_once()
+        assert transport_instance.cache == mock_cache.return_value
