@@ -82,6 +82,36 @@ All new code must pass all four gates. Do not skip any.
 - Do not commit unless explicitly asked. Do not push unless explicitly asked
 - Do not amend commits unless explicitly asked
 - Do not use `--no-verify` or `--force` unless explicitly asked
+- Append a `Co-Authored-By` trailer to every commit message with your exact model name and vendor email:
+  - Format: `Co-Authored-By: <model name> <noreply@vendor-domain>`
+  - Examples: `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`, `Co-Authored-By: GPT-5.3 Codex <noreply@openai.com>`
+
+### PR Description Template
+
+Use this structure for all pull request descriptions:
+
+```markdown
+## Work Package
+WP-XX: <title from docs/50. roadmap.md>
+
+## Summary
+<bullet list: what this PR does and why>
+
+## Changes
+<bullet list: file paths with one-line descriptions>
+
+## Testing
+<bullet list: quality gates run and their results>
+
+## Related
+<links to spec docs, roadmap, data model>
+
+<agent attribution line -- see below>
+```
+
+Append an attribution line at the end of every PR description. Use whichever applies:
+- Claude Code: `Generated with [Claude Code](https://claude.com/claude-code)`
+- Codex: `Generated with [Codex](https://openai.com/codex/)`
 
 ## Key References
 
