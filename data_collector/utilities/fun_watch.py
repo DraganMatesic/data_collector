@@ -1,7 +1,7 @@
 """@fun_watch decorator for function-level performance monitoring.
 
 Provides automatic function registration (AppFunctions) and per-invocation
-metric recording (FunctionLog) with thread-safe closure-local counters.
+metric recording (FunctionLog) with thread-safe context-local counters.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import functools
 import inspect
 import logging
 import threading
+from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from typing import Any
 
@@ -28,11 +29,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class FunWatchContext:
-    """Mutable context for tracking solved/failed counts within a decorated function.
+    """Per-invocation counters used by the ``@fun_watch`` wrapper.
 
-    Set on ``self._fw_ctx`` by the ``@fun_watch`` wrapper before calling the
-    decorated function.  The function body uses ``self._fw_ctx.mark_solved()``
-    and ``self._fw_ctx.mark_failed()`` to update counters.
+    Application code updates the active invocation context through
+    ``self._fw_ctx.mark_solved()`` / ``self._fw_ctx.mark_failed()``.
+    The active context is bound using context-local state.
     """
 
     __slots__ = ("solved", "failed", "task_size")
@@ -49,6 +50,27 @@ class FunWatchContext:
     def mark_failed(self, count: int = 1) -> None:
         """Increment the failed counter."""
         self.failed += count
+
+
+class _FunWatchContextProxy:
+    """Proxy exposed as ``self._fw_ctx`` that resolves active context-local state."""
+
+    __slots__ = ("_registry",)
+
+    def __init__(self, registry: FunWatchRegistry) -> None:
+        self._registry = registry
+
+    def mark_solved(self, count: int = 1) -> None:
+        """Forward solved counter updates to the active invocation context."""
+        self._registry.get_active_context().mark_solved(count)
+
+    def mark_failed(self, count: int = 1) -> None:
+        """Forward failed counter updates to the active invocation context."""
+        self._registry.get_active_context().mark_failed(count)
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward attribute access to the active invocation context."""
+        return getattr(self._registry.get_active_context(), name)
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +96,8 @@ class FunWatchRegistry:
 
         self._system_db: Database | None = None
         self._db_lock = threading.Lock()
+        self._active_context: ContextVar[FunWatchContext | None] = ContextVar("fun_watch_active_context", default=None)
+        self._context_proxy = _FunWatchContextProxy(self)
 
     @classmethod
     def instance(cls) -> FunWatchRegistry:
@@ -109,6 +133,31 @@ class FunWatchRegistry:
             current = self._function_counters.get(key, 0) + 1
             self._function_counters[key] = current
         return current
+
+    # -- Invocation context --------------------------------------------------
+
+    def bind_context(self, ctx: FunWatchContext) -> Token[FunWatchContext | None]:
+        """Bind invocation context for the current execution flow."""
+        return self._active_context.set(ctx)
+
+    def unbind_context(self, token: Token[FunWatchContext | None]) -> None:
+        """Restore the previous invocation context for the current execution flow."""
+        self._active_context.reset(token)
+
+    def get_active_context(self) -> FunWatchContext:
+        """Return current invocation context or raise if none is bound."""
+        ctx = self._active_context.get()
+        if ctx is None:
+            raise RuntimeError(
+                "FunWatchContext is not active. "
+                "Use self._fw_ctx only inside methods decorated with @fun_watch."
+            )
+        return ctx
+
+    def ensure_context_proxy(self, instance: Any) -> None:
+        """Attach the stable context proxy to instance as ``_fw_ctx``."""
+        if getattr(instance, "_fw_ctx", None) is not self._context_proxy:
+            instance._fw_ctx = self._context_proxy
 
     # -- AppFunctions registration ------------------------------------------
 
@@ -225,9 +274,9 @@ def fun_watch(func: Any) -> Any:
 
     * ``self.main_app: str``  -- root app hash (defaults to ``self.app_id``)
 
-    During execution the wrapper sets ``self._fw_ctx`` to a
-    :class:`FunWatchContext` so the function body can call
-    ``self._fw_ctx.mark_solved()`` / ``self._fw_ctx.mark_failed()``.
+    During execution the wrapper binds a per-invocation :class:`FunWatchContext`
+    in context-local state. The instance receives a stable ``self._fw_ctx`` proxy
+    that routes ``mark_solved`` / ``mark_failed`` to the active context.
     """
 
     @functools.wraps(func)
@@ -258,10 +307,10 @@ def fun_watch(func: Any) -> Any:
         if args and hasattr(args[0], "__len__"):
             task_size = len(args[0])
 
-        # --- Step 3: Create context ---
+        # --- Step 3: Bind per-invocation context ---
         ctx = FunWatchContext(task_size=task_size)
-        prev_ctx = getattr(self, "_fw_ctx", None)
-        self._fw_ctx = ctx
+        registry.ensure_context_proxy(self)
+        context_token = registry.bind_context(ctx)
 
         # --- Step 4: Execute with timing ---
         thread_id = threading.get_ident()
@@ -271,22 +320,24 @@ def fun_watch(func: Any) -> Any:
         try:
             result = func(self, *args, **kwargs)
         finally:
-            end_time = datetime.now(UTC)
-            registry.insert_function_log(
-                function_hash=function_hash_value,
-                execution_order=execution_order,
-                main_app=main_app,
-                app_id=app_id,
-                thread_id=thread_id,
-                task_size=ctx.task_size,
-                solved=ctx.solved,
-                failed=ctx.failed,
-                start_time=start_time,
-                end_time=end_time,
-                runtime_id=runtime_id,
-            )
-            registry.update_last_seen(function_hash_value)
-            self._fw_ctx = prev_ctx
+            try:
+                end_time = datetime.now(UTC)
+                registry.insert_function_log(
+                    function_hash=function_hash_value,
+                    execution_order=execution_order,
+                    main_app=main_app,
+                    app_id=app_id,
+                    thread_id=thread_id,
+                    task_size=ctx.task_size,
+                    solved=ctx.solved,
+                    failed=ctx.failed,
+                    start_time=start_time,
+                    end_time=end_time,
+                    runtime_id=runtime_id,
+                )
+                registry.update_last_seen(function_hash_value)
+            finally:
+                registry.unbind_context(context_token)
 
         return result
 

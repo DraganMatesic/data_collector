@@ -69,7 +69,7 @@ class FunctionLog(Base):
     execution_order = Column(Integer)
     main_app = Column(String(64), index=True)
     app_id = Column(String(64), index=True)
-    thread_id = Column(Integer)
+    thread_id = Column(BigInteger)
     task_size = Column(BigInteger)
     solved = Column(Integer, server_default=text("0"))
     failed = Column(Integer, server_default=text("0"))
