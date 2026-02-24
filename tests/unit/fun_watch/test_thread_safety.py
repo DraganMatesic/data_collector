@@ -80,6 +80,68 @@ class FanOutApp:
         return worker_count
 
 
+class FanOutNestedWorkerApp:
+    def __init__(self) -> None:
+        self.app_id = "fan_out_nested_worker_app"
+        self.runtime = "fan_out_nested_worker_runtime"
+
+    @fun_watch
+    def inner(self) -> None:
+        self._fw_ctx.mark_solved(2)  # type: ignore[attr-defined]
+
+    @fun_watch
+    def run_worker_nested_update(self) -> int:
+        registry = FunWatchRegistry.instance()
+
+        def worker() -> None:
+            self.inner()
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+
+        wrapped_worker = registry.wrap_with_active_context(worker)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(wrapped_worker)
+            future.result()
+        return 3
+
+
+class FanOutCleanupApp:
+    def __init__(self) -> None:
+        self.app_id = "fan_out_cleanup_app"
+        self.runtime = "fan_out_cleanup_runtime"
+
+    @fun_watch
+    def run_wrapped_then_raw_on_reused_thread(self) -> tuple[str, str]:
+        registry = FunWatchRegistry.instance()
+
+        def failing_worker() -> None:
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+            raise ValueError("worker failure")
+
+        def raw_worker() -> None:
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+
+        wrapped_failing_worker = registry.wrap_with_active_context(failing_worker)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            first_future = executor.submit(wrapped_failing_worker)
+            try:
+                first_future.result()
+            except Exception as exc:
+                first_error = type(exc).__name__
+            else:
+                first_error = "None"
+
+            second_future = executor.submit(raw_worker)
+            try:
+                second_future.result()
+            except Exception as exc:
+                second_error = type(exc).__name__
+            else:
+                second_error = "None"
+
+        return first_error, second_error
+
+
 class TestConcurrentCalls:
     def setup_method(self) -> None:
         FunWatchRegistry.reset()
@@ -171,6 +233,43 @@ class TestConcurrentCalls:
         log_kwargs = mock_insert_log.call_args[1]
         assert log_kwargs["solved"] == 12
         assert log_kwargs["failed"] == 0
+
+    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_wrapped_worker_keeps_parent_context_after_nested_invocation(
+        self,
+        mock_register: MagicMock,
+        mock_last_seen: MagicMock,
+        mock_insert_log: MagicMock,
+    ) -> None:
+        app = FanOutNestedWorkerApp()
+
+        result = app.run_worker_nested_update()
+
+        assert result == 3
+        assert mock_insert_log.call_count == 2
+
+        rows = [call[1] for call in mock_insert_log.call_args_list]
+        assert any(row["solved"] == 2 and row["failed"] == 0 for row in rows)
+        assert any(row["solved"] == 1 and row["failed"] == 0 for row in rows)
+
+    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_wrap_with_active_context_unbinds_on_worker_exception(
+        self,
+        mock_register: MagicMock,
+        mock_last_seen: MagicMock,
+        mock_insert_log: MagicMock,
+    ) -> None:
+        app = FanOutCleanupApp()
+
+        first_error, second_error = app.run_wrapped_then_raw_on_reused_thread()
+
+        assert first_error == "ValueError"
+        assert second_error == "RuntimeError"
+        assert mock_insert_log.call_count == 1
 
     @patch(f"{_REGISTRY}.insert_function_log")
     @patch(f"{_REGISTRY}.update_last_seen")

@@ -2,9 +2,9 @@
 
 Demonstrates:
     - ThreadPoolExecutor with multiple workers calling the same decorated method
-    - Each thread gets its own FunWatchContext (closure-local, no cross-talk)
+    - Each thread gets its own context-local FunWatchContext (no cross-talk)
     - execution_order increments per (runtime, thread_id) pair
-    - Thread-safe solved counters (no data corruption)
+    - Thread-safe counter updates (no data corruption)
 
 Output shows ORM repr() of each FunctionLog row, followed by a
 per-thread summary table.
