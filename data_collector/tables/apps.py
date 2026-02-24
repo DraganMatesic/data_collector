@@ -212,3 +212,25 @@ class AppDbObjects(Base):
 
     archive = Column(DateTime, comment="data and time this database object was removed from usage")
     date_created = Column(DateTime, server_default=func.now())  # DateCreated
+
+
+class AppFunctions(Base):
+    """Function registry populated by @fun_watch on first invocation."""
+
+    __tablename__ = "app_functions"
+
+    id = auto_increment_column()
+    function_hash = Column(String(64), unique=True, index=True, nullable=False)
+    function_name = Column(String(125), nullable=False)
+    filepath = Column(String(1024))
+    app_id = Column(
+        String(64),
+        ForeignKey(Apps.app, ondelete="CASCADE"),
+        index=True,
+    )
+    first_seen = Column(DateTime)
+    last_seen = Column(DateTime)
+    sha = Column(String(64), index=True)
+    archive = Column(DateTime, comment="Soft delete timestamp")
+    date_created = Column(DateTime, server_default=func.now())
+    date_modified = Column(DateTime)

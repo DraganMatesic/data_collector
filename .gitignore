@@ -11,3 +11,5 @@ code-workspace
 .venv/
 .claude/
 .pylint_latest.txt
+CLAUDE.md
+memory
