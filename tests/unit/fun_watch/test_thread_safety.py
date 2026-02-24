@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +28,23 @@ class ThreadApp:
     @fun_watch
     def simple(self) -> None:
         pass
+
+
+class SharedInstanceRaceApp:
+    def __init__(self) -> None:
+        self.app_id = "shared_instance_race_app"
+        self.runtime = "shared_instance_race_runtime"
+        self.start_barrier = threading.Barrier(2)
+
+    @fun_watch
+    def worker(self, count: int, initial_delay: float = 0.0) -> int:
+        self.start_barrier.wait()
+        if initial_delay > 0:
+            time.sleep(initial_delay)
+        for _ in range(count):
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+            time.sleep(0.0001)
+        return count
 
 
 class TestConcurrentCalls:
@@ -76,6 +95,30 @@ class TestConcurrentCalls:
 
         thread_ids = {call[1]["thread_id"] for call in mock_insert_log.call_args_list}
         assert len(thread_ids) >= 1
+
+    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_shared_instance_context_isolation_under_overlap(
+        self,
+        mock_register: MagicMock,
+        mock_last_seen: MagicMock,
+        mock_insert_log: MagicMock,
+    ) -> None:
+        app = SharedInstanceRaceApp()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(app.worker, 1, 0.0),
+                executor.submit(app.worker, 80, 0.002),
+            ]
+            results = [future.result() for future in futures]
+
+        assert sorted(results) == [1, 80]
+        assert mock_insert_log.call_count == 2
+
+        solved_values = sorted(call[1]["solved"] for call in mock_insert_log.call_args_list)
+        assert solved_values == [1, 80]
 
 
 class TestExecutionOrderSequencing:
