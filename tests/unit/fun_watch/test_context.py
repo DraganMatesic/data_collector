@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from data_collector.utilities.fun_watch import FunWatchContext
 
 
@@ -54,3 +56,43 @@ class TestFunWatchContext:
         ctx.mark_failed(2)
         assert ctx.solved == 10
         assert ctx.failed == 2
+
+    def test_mark_solved_waits_for_counter_lock(self) -> None:
+        ctx = FunWatchContext()
+        started = threading.Event()
+        completed = threading.Event()
+
+        def worker() -> None:
+            started.set()
+            ctx.mark_solved()
+            completed.set()
+
+        with ctx._counter_lock:  # type: ignore[attr-defined]
+            thread = threading.Thread(target=worker)
+            thread.start()
+            assert started.wait(1.0)
+            assert not completed.wait(0.05)
+
+        thread.join(1.0)
+        assert completed.is_set()
+        assert ctx.solved == 1
+
+    def test_mark_failed_waits_for_counter_lock(self) -> None:
+        ctx = FunWatchContext()
+        started = threading.Event()
+        completed = threading.Event()
+
+        def worker() -> None:
+            started.set()
+            ctx.mark_failed()
+            completed.set()
+
+        with ctx._counter_lock:  # type: ignore[attr-defined]
+            thread = threading.Thread(target=worker)
+            thread.start()
+            assert started.wait(1.0)
+            assert not completed.wait(0.05)
+
+        thread.join(1.0)
+        assert completed.is_set()
+        assert ctx.failed == 1

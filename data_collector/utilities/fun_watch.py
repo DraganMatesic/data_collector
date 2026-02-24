@@ -38,20 +38,28 @@ class FunWatchContext:
     The active context is bound using context-local state.
     """
 
-    __slots__ = ("solved", "failed", "task_size")
+    __slots__ = ("solved", "failed", "task_size", "_counter_lock")
 
     def __init__(self, task_size: int | None = None) -> None:
         self.solved: int = 0
         self.failed: int = 0
         self.task_size: int | None = task_size
+        self._counter_lock = threading.Lock()
 
     def mark_solved(self, count: int = 1) -> None:
         """Increment the solved counter."""
-        self.solved += count
+        with self._counter_lock:
+            self.solved += count
 
     def mark_failed(self, count: int = 1) -> None:
         """Increment the failed counter."""
-        self.failed += count
+        with self._counter_lock:
+            self.failed += count
+
+    def snapshot(self) -> tuple[int, int]:
+        """Return an atomic snapshot of solved and failed counters."""
+        with self._counter_lock:
+            return self.solved, self.failed
 
 
 class _FunWatchContextProxy:
@@ -99,8 +107,6 @@ class FunWatchRegistry:
         self._system_db: Database | None = None
         self._db_lock = threading.Lock()
         self._active_context: ContextVar[FunWatchContext | None] = ContextVar("fun_watch_active_context", default=None)
-        self._thread_contexts: dict[int, FunWatchContext] = {}
-        self._thread_context_lock = threading.Lock()
         self._context_proxy = _FunWatchContextProxy(self)
 
     @classmethod
@@ -142,35 +148,15 @@ class FunWatchRegistry:
 
     def bind_context(self, ctx: FunWatchContext) -> Token[FunWatchContext | None]:
         """Bind invocation context for the current execution flow."""
-        token = self._active_context.set(ctx)
-        self.bind_context_to_current_thread(ctx)
-        return token
+        return self._active_context.set(ctx)
 
     def unbind_context(self, token: Token[FunWatchContext | None]) -> None:
         """Restore the previous invocation context for the current execution flow."""
-        current_ctx = self._active_context.get()
         self._active_context.reset(token)
-        if current_ctx is not None:
-            self.unbind_context_from_current_thread(current_ctx)
-
-    def bind_context_to_current_thread(self, ctx: FunWatchContext) -> None:
-        """Bind context for the current thread as fallback for worker fan-out."""
-        with self._thread_context_lock:
-            self._thread_contexts[threading.get_ident()] = ctx
-
-    def unbind_context_from_current_thread(self, ctx: FunWatchContext) -> None:
-        """Unbind context for current thread if it matches provided context."""
-        thread_id = threading.get_ident()
-        with self._thread_context_lock:
-            if self._thread_contexts.get(thread_id) is ctx:
-                self._thread_contexts.pop(thread_id, None)
 
     def get_active_context(self) -> FunWatchContext:
         """Return current invocation context or raise if none is bound."""
         ctx = self._active_context.get()
-        if ctx is None:
-            with self._thread_context_lock:
-                ctx = self._thread_contexts.get(threading.get_ident())
         if ctx is None:
             raise RuntimeError(
                 "FunWatchContext is not active. "
@@ -181,15 +167,15 @@ class FunWatchRegistry:
 
     def wrap_with_active_context(self, func: Callable[..., T]) -> Callable[..., T]:
         """Wrap callable so worker threads inherit active @fun_watch context."""
-        ctx = self.get_active_context()
+        parent_ctx = self.get_active_context()
 
         @functools.wraps(func)
         def wrapped(*args: Any, **kwargs: Any) -> T:
-            self.bind_context_to_current_thread(ctx)
+            token = self.bind_context(parent_ctx)
             try:
                 return func(*args, **kwargs)
             finally:
-                self.unbind_context_from_current_thread(ctx)
+                self.unbind_context(token)
 
         return wrapped
 
@@ -360,6 +346,7 @@ def fun_watch(func: Any) -> Any:
             result = func(self, *args, **kwargs)
         finally:
             try:
+                solved, failed = ctx.snapshot()
                 end_time = datetime.now(UTC)
                 registry.insert_function_log(
                     function_hash=function_hash_value,
@@ -368,8 +355,8 @@ def fun_watch(func: Any) -> Any:
                     app_id=app_id,
                     thread_id=thread_id,
                     task_size=ctx.task_size,
-                    solved=ctx.solved,
-                    failed=ctx.failed,
+                    solved=solved,
+                    failed=failed,
                     start_time=start_time,
                     end_time=end_time,
                     runtime_id=runtime_id,
