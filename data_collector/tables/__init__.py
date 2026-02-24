@@ -3,6 +3,7 @@
 from data_collector.enums import CmdFlag, CmdName, FatalFlag, RunStatus
 from data_collector.tables.apps import (
     AppDbObjects,
+    AppFunctions,
     AppGroups,
     AppParents,
     Apps,
@@ -11,13 +12,14 @@ from data_collector.tables.apps import (
     CodebookFatalFlags,
     CodebookRunStatus,
 )
-from data_collector.tables.log import CodebookLogLevel, Logs
+from data_collector.tables.log import CodebookLogLevel, FunctionLog, Logs
 from data_collector.tables.notifications import CodebookAlertSeverity
 from data_collector.tables.runtime import CodebookRuntimeCodes, Runtime
 from data_collector.tables.shared import Base
 
 __all__ = [
     "AppDbObjects",
+    "AppFunctions",
     "AppGroups",
     "AppParents",
     "Apps",
@@ -32,6 +34,7 @@ __all__ = [
     "CodebookRunStatus",
     "CodebookRuntimeCodes",
     "FatalFlag",
+    "FunctionLog",
     "Logs",
     "RunStatus",
     "Runtime",

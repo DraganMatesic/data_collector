@@ -3,7 +3,7 @@
 
 from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, String, Text, func, text
 
-from data_collector.tables.apps import Apps
+from data_collector.tables.apps import AppFunctions, Apps
 from data_collector.tables.runtime import Runtime
 from data_collector.tables.shared import Base
 from data_collector.utilities.database.columns import auto_increment_column
@@ -53,3 +53,37 @@ class Logs(Base):
     msg = Column(Text, doc="Logging message that is emitted")
     runtime = Column(String(length=64), ForeignKey(Runtime.runtime, ondelete="CASCADE"), index=True)
     date_created = Column(DateTime, server_default=text("NOW()"))
+
+
+class FunctionLog(Base):
+    """Per-invocation execution metrics recorded by @fun_watch."""
+
+    __tablename__ = "function_log"
+
+    id = auto_increment_column()
+    function_hash = Column(
+        String(64),
+        ForeignKey(AppFunctions.function_hash, ondelete="CASCADE"),
+        index=True,
+    )
+    execution_order = Column(Integer)
+    main_app = Column(String(64), index=True)
+    app_id = Column(String(64), index=True)
+    thread_id = Column(Integer)
+    task_size = Column(BigInteger)
+    solved = Column(Integer, server_default=text("0"))
+    failed = Column(Integer, server_default=text("0"))
+    start_time = Column(DateTime)
+    end_time = Column(DateTime)
+    totals = Column(Integer)
+    totalm = Column(Integer)
+    totalh = Column(Integer)
+    runtime = Column(
+        String(64),
+        ForeignKey(Runtime.runtime, ondelete="CASCADE"),
+        index=True,
+    )
+    sha = Column(String(64), index=True)
+    archive = Column(DateTime, comment="Soft delete timestamp")
+    date_created = Column(DateTime, server_default=func.now())
+    date_modified = Column(DateTime)
