@@ -10,9 +10,10 @@ import functools
 import inspect
 import logging
 import threading
+from collections.abc import Callable
 from contextvars import ContextVar, Token
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
 
 from data_collector.settings.main import MainDatabaseSettings
 from data_collector.tables.apps import AppFunctions
@@ -22,6 +23,7 @@ from data_collector.utilities.functions.math import get_totalh, get_totalm, get_
 from data_collector.utilities.functions.runtime import make_hash
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +99,8 @@ class FunWatchRegistry:
         self._system_db: Database | None = None
         self._db_lock = threading.Lock()
         self._active_context: ContextVar[FunWatchContext | None] = ContextVar("fun_watch_active_context", default=None)
+        self._thread_contexts: dict[int, FunWatchContext] = {}
+        self._thread_context_lock = threading.Lock()
         self._context_proxy = _FunWatchContextProxy(self)
 
     @classmethod
@@ -138,21 +142,56 @@ class FunWatchRegistry:
 
     def bind_context(self, ctx: FunWatchContext) -> Token[FunWatchContext | None]:
         """Bind invocation context for the current execution flow."""
-        return self._active_context.set(ctx)
+        token = self._active_context.set(ctx)
+        self.bind_context_to_current_thread(ctx)
+        return token
 
     def unbind_context(self, token: Token[FunWatchContext | None]) -> None:
         """Restore the previous invocation context for the current execution flow."""
+        current_ctx = self._active_context.get()
         self._active_context.reset(token)
+        if current_ctx is not None:
+            self.unbind_context_from_current_thread(current_ctx)
+
+    def bind_context_to_current_thread(self, ctx: FunWatchContext) -> None:
+        """Bind context for the current thread as fallback for worker fan-out."""
+        with self._thread_context_lock:
+            self._thread_contexts[threading.get_ident()] = ctx
+
+    def unbind_context_from_current_thread(self, ctx: FunWatchContext) -> None:
+        """Unbind context for current thread if it matches provided context."""
+        thread_id = threading.get_ident()
+        with self._thread_context_lock:
+            if self._thread_contexts.get(thread_id) is ctx:
+                self._thread_contexts.pop(thread_id, None)
 
     def get_active_context(self) -> FunWatchContext:
         """Return current invocation context or raise if none is bound."""
         ctx = self._active_context.get()
         if ctx is None:
+            with self._thread_context_lock:
+                ctx = self._thread_contexts.get(threading.get_ident())
+        if ctx is None:
             raise RuntimeError(
                 "FunWatchContext is not active. "
-                "Use self._fw_ctx only inside methods decorated with @fun_watch."
+                "Use self._fw_ctx only inside methods decorated with @fun_watch, "
+                "or wrap worker callables with FunWatchRegistry.wrap_with_active_context()."
             )
         return ctx
+
+    def wrap_with_active_context(self, func: Callable[..., T]) -> Callable[..., T]:
+        """Wrap callable so worker threads inherit active @fun_watch context."""
+        ctx = self.get_active_context()
+
+        @functools.wraps(func)
+        def wrapped(*args: Any, **kwargs: Any) -> T:
+            self.bind_context_to_current_thread(ctx)
+            try:
+                return func(*args, **kwargs)
+            finally:
+                self.unbind_context_from_current_thread(ctx)
+
+        return wrapped
 
     def ensure_context_proxy(self, instance: Any) -> None:
         """Attach the stable context proxy to instance as ``_fw_ctx``."""
