@@ -7,6 +7,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from data_collector.utilities.fun_watch import FunWatchRegistry, fun_watch
 
 _REGISTRY = "data_collector.utilities.fun_watch.FunWatchRegistry"
@@ -45,6 +47,37 @@ class SharedInstanceRaceApp:
             self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
             time.sleep(0.0001)
         return count
+
+
+class FanOutApp:
+    def __init__(self) -> None:
+        self.app_id = "fan_out_app"
+        self.runtime = "fan_out_runtime"
+
+    @fun_watch
+    def run_with_wrapper(self, worker_count: int) -> int:
+        registry = FunWatchRegistry.instance()
+
+        def worker() -> None:
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+
+        wrapped_worker = registry.wrap_with_active_context(worker)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(wrapped_worker) for _ in range(worker_count)]
+            for future in futures:
+                future.result()
+        return worker_count
+
+    @fun_watch
+    def run_without_wrapper(self, worker_count: int) -> int:
+        def worker() -> None:
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(worker) for _ in range(worker_count)]
+            for future in futures:
+                future.result()
+        return worker_count
 
 
 class TestConcurrentCalls:
@@ -119,6 +152,39 @@ class TestConcurrentCalls:
 
         solved_values = sorted(call[1]["solved"] for call in mock_insert_log.call_args_list)
         assert solved_values == [1, 80]
+
+    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_child_threads_inherit_parent_context_via_wrapper(
+        self,
+        mock_register: MagicMock,
+        mock_last_seen: MagicMock,
+        mock_insert_log: MagicMock,
+    ) -> None:
+        app = FanOutApp()
+
+        result = app.run_with_wrapper(12)
+
+        assert result == 12
+        assert mock_insert_log.call_count == 1
+        log_kwargs = mock_insert_log.call_args[1]
+        assert log_kwargs["solved"] == 12
+        assert log_kwargs["failed"] == 0
+
+    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_child_thread_without_wrapper_raises_runtime_error(
+        self,
+        mock_register: MagicMock,
+        mock_last_seen: MagicMock,
+        mock_insert_log: MagicMock,
+    ) -> None:
+        app = FanOutApp()
+
+        with pytest.raises(RuntimeError, match="FunWatchContext is not active"):
+            app.run_without_wrapper(4)
 
 
 class TestExecutionOrderSequencing:
