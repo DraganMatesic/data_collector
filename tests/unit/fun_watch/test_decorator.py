@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -46,6 +47,86 @@ class FakeApp:
     @fun_watch
     def non_sized_arg(self, value: int) -> int:
         return value
+
+
+class NestedApp:
+    """App with nested decorated methods to validate context restoration."""
+
+    def __init__(self) -> None:
+        self.app_id = "nested_app_hash"
+        self.runtime = "nested_runtime_hash"
+
+    @fun_watch
+    def inner(self, items: list[str]) -> int:
+        for _item in items:
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+        return len(items)
+
+    @fun_watch
+    def outer(self, outer_items: list[str], inner_items: list[str]) -> int:
+        for _item in outer_items:
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+        _ = self.inner(inner_items)
+        for _item in outer_items:
+            self._fw_ctx.mark_failed()  # type: ignore[attr-defined]
+        return len(outer_items) + len(inner_items)
+
+
+class NestedExceptionApp:
+    """App with nested decorated methods where inner call raises an exception."""
+
+    def __init__(self) -> None:
+        self.app_id = "nested_exception_app_hash"
+        self.runtime = "nested_exception_runtime_hash"
+
+    @fun_watch
+    def inner_fail(self, items: list[str]) -> None:
+        self._fw_ctx.mark_failed()  # type: ignore[attr-defined]
+        raise ValueError("nested failure")
+
+    @fun_watch
+    def outer_handles_inner_failure(self, outer_items: list[str], inner_items: list[str]) -> int:
+        for _item in outer_items:
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+        try:
+            self.inner_fail(inner_items)
+        except ValueError:
+            self._fw_ctx.mark_failed(len(inner_items))  # type: ignore[attr-defined]
+        return len(outer_items)
+
+
+class NestedFanOutApp:
+    """App combining nested @fun_watch calls with child-thread fan-out."""
+
+    def __init__(self) -> None:
+        self.app_id = "nested_fan_out_app_hash"
+        self.runtime = "nested_fan_out_runtime_hash"
+
+    @fun_watch
+    def inner(self, items: list[str]) -> int:
+        for _item in items:
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+        return len(items)
+
+    @fun_watch
+    def outer(self, worker_count: int, inner_items: list[str], fail_count: int) -> int:
+        registry = FunWatchRegistry.instance()
+
+        def worker() -> None:
+            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+
+        wrapped_worker = registry.wrap_with_active_context(worker)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(wrapped_worker) for _ in range(worker_count)]
+            for future in futures:
+                future.result()
+
+        _ = self.inner(inner_items)
+
+        for _ in range(fail_count):
+            self._fw_ctx.mark_failed()  # type: ignore[attr-defined]
+
+        return worker_count + len(inner_items)
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +360,68 @@ class TestReturnValue:
         app = FakeApp()
         result = app.no_args_method()
         assert result == "done"
+
+
+class TestNestedInvocations:
+    def setup_method(self) -> None:
+        FunWatchRegistry.reset()
+
+    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_nested_success_restores_outer_context(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        mock_insert_log: MagicMock,
+    ) -> None:
+        app = NestedApp()
+        result = app.outer(["a", "b"], ["x", "y", "z"])
+
+        assert result == 5
+        assert mock_insert_log.call_count == 2
+
+        rows = [call[1] for call in mock_insert_log.call_args_list]
+        assert any(row["task_size"] == 3 and row["solved"] == 3 and row["failed"] == 0 for row in rows)
+        assert any(row["task_size"] == 2 and row["solved"] == 2 and row["failed"] == 2 for row in rows)
+
+    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_nested_exception_restores_outer_context(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        mock_insert_log: MagicMock,
+    ) -> None:
+        app = NestedExceptionApp()
+        result = app.outer_handles_inner_failure(["a", "b"], ["x", "y", "z"])
+
+        assert result == 2
+        assert mock_insert_log.call_count == 2
+
+        rows = [call[1] for call in mock_insert_log.call_args_list]
+        assert any(row["task_size"] == 3 and row["solved"] == 0 and row["failed"] == 1 for row in rows)
+        assert any(row["task_size"] == 2 and row["solved"] == 2 and row["failed"] == 3 for row in rows)
+
+    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_nested_fan_out_keeps_outer_and_inner_counters_isolated(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        mock_insert_log: MagicMock,
+    ) -> None:
+        app = NestedFanOutApp()
+        result = app.outer(6, ["a", "b", "c"], 2)
+
+        assert result == 9
+        assert mock_insert_log.call_count == 2
+
+        rows = [call[1] for call in mock_insert_log.call_args_list]
+        assert any(row["task_size"] == 3 and row["solved"] == 3 and row["failed"] == 0 for row in rows)
+        assert any(row["task_size"] is None and row["solved"] == 6 and row["failed"] == 2 for row in rows)
 
 
 class TestValidation:

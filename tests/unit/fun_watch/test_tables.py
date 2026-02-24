@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sqlalchemy import BigInteger
 from sqlalchemy import inspect as sa_inspect
 
 from data_collector.tables.apps import AppFunctions
@@ -64,6 +65,10 @@ class TestFunctionLog:
     def test_runtime_foreign_key(self) -> None:
         fks = {fk.target_fullname for fk in FunctionLog.__table__.foreign_keys}
         assert "runtime.runtime" in fks
+
+    def test_thread_id_is_big_integer(self) -> None:
+        col = FunctionLog.__table__.c.thread_id
+        assert isinstance(col.type, BigInteger)
 
     def test_indexed_columns(self) -> None:
         table = FunctionLog.__table__
