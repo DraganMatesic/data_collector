@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class DatabaseType(StrEnum):
@@ -98,15 +99,48 @@ class MainDatabaseSettings(DatabaseSettings):
 class LogSettings(BaseSettings):
     """Cross-cutting logging behavior settings."""
 
+    model_config = SettingsConfigDict(populate_by_name=True)
+
     log_to_db: bool = True
-    log_to_splunk: bool = False
-    splunk_hec_url: str | None = None
-    splunk_token: str | None = None
+    log_to_splunk: bool = Field(default=False, validation_alias="DC_LOG_SPLUNK_ENABLED")
+    splunk_hec_url: str | None = Field(default=None, validation_alias="DC_LOG_SPLUNK_URL")
+    splunk_token: str | None = Field(default=None, validation_alias="DC_LOG_SPLUNK_TOKEN")
+    splunk_verify_tls: bool = Field(default=True, validation_alias="DC_LOG_SPLUNK_VERIFY_TLS")
+    splunk_ca_bundle: str | None = Field(default=None, validation_alias="DC_LOG_SPLUNK_CA_BUNDLE")
+    splunk_index: str = Field(default="default", validation_alias="DC_LOG_SPLUNK_INDEX")
+    splunk_sourcetype: str = Field(default="data_collector:structured", validation_alias="DC_LOG_SPLUNK_SOURCETYPE")
     log_max_queue: int = 10000
+    log_format: Literal["console", "json"] = "console"
+    log_level: int = 10
+    log_context_max_keys: int = 50
+    log_error_file: str = Field(default="error.log", validation_alias="DC_LOG_ERROR_FILE")
+    log_error_max_bytes: int = 5_242_880
+    log_error_backup_count: int = 3
+
+    @field_validator("log_error_file", mode="before")
+    @classmethod
+    def _default_empty_log_error_file(cls, value: object) -> object:
+        """Use default fallback when env var is unset or empty."""
+        if value is None:
+            return "error.log"
+        if isinstance(value, str) and not value.strip():
+            return "error.log"
+        return value
+
+
+class SplunkAdminSettings(BaseSettings):
+    """Splunk Management API credentials for provisioning."""
+
+    model_config = SettingsConfigDict(populate_by_name=True)
+
+    mgmt_url: str = Field(default="https://127.0.0.1:8089", validation_alias="DC_SPLUNK_MGMT_URL")
+    admin_user: str | None = Field(default=None, validation_alias="DC_SPLUNK_ADMIN_USER")
+    admin_password: str | None = Field(default=None, validation_alias="DC_SPLUNK_ADMIN_PASSWORD")
+    verify_tls: bool = Field(default=False, validation_alias="DC_SPLUNK_MGMT_VERIFY_TLS")
 
 
 class GeneralSettings(BaseSettings):
-    """General settings is used when more than one setting is required to be imported into app"""
+    """Composite settings class aggregating database and logging configuration."""
 
     @staticmethod
     def _default_main_db() -> MainDatabaseSettings:
