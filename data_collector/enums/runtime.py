@@ -14,6 +14,7 @@ class RunStatus(IntEnum):
 class FatalFlag(IntEnum):
     """Fatal-state classification values."""
 
+    NONE = 0
     FAILED_TO_START = 1
     APP_STOPPED_ALERT_SENT = 2
     UNEXPECTED_BEHAVIOUR = 3

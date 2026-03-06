@@ -9,12 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from data_collector.utilities.fun_watch import FunWatchRegistry, fun_watch
+from data_collector.utilities.fun_watch import FunWatchMixin, FunWatchRegistry, fun_watch
 
 _REGISTRY = "data_collector.utilities.fun_watch.FunWatchRegistry"
 
 
-class ThreadApp:
+class ThreadApp(FunWatchMixin):
     def __init__(self) -> None:
         self.app_id = "thread_test_app"
         self.runtime = "thread_test_runtime"
@@ -23,7 +23,7 @@ class ThreadApp:
     def worker(self, items: list[int]) -> int:
         total = 0
         for item in items:
-            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+            self._fun_watch.mark_solved()
             total += item
         return total
 
@@ -32,7 +32,7 @@ class ThreadApp:
         pass
 
 
-class SharedInstanceRaceApp:
+class SharedInstanceRaceApp(FunWatchMixin):
     def __init__(self) -> None:
         self.app_id = "shared_instance_race_app"
         self.runtime = "shared_instance_race_runtime"
@@ -44,12 +44,12 @@ class SharedInstanceRaceApp:
         if initial_delay > 0:
             time.sleep(initial_delay)
         for _ in range(count):
-            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+            self._fun_watch.mark_solved()
             time.sleep(0.0001)
         return count
 
 
-class FanOutApp:
+class FanOutApp(FunWatchMixin):
     def __init__(self) -> None:
         self.app_id = "fan_out_app"
         self.runtime = "fan_out_runtime"
@@ -59,7 +59,7 @@ class FanOutApp:
         registry = FunWatchRegistry.instance()
 
         def worker() -> None:
-            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+            self._fun_watch.mark_solved()
 
         wrapped_worker = registry.wrap_with_active_context(worker)
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -71,7 +71,7 @@ class FanOutApp:
     @fun_watch
     def run_without_wrapper(self, worker_count: int) -> int:
         def worker() -> None:
-            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+            self._fun_watch.mark_solved()
 
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = [executor.submit(worker) for _ in range(worker_count)]
@@ -80,14 +80,14 @@ class FanOutApp:
         return worker_count
 
 
-class FanOutNestedWorkerApp:
+class FanOutNestedWorkerApp(FunWatchMixin):
     def __init__(self) -> None:
         self.app_id = "fan_out_nested_worker_app"
         self.runtime = "fan_out_nested_worker_runtime"
 
     @fun_watch
     def inner(self) -> None:
-        self._fw_ctx.mark_solved(2)  # type: ignore[attr-defined]
+        self._fun_watch.mark_solved(2)
 
     @fun_watch
     def run_worker_nested_update(self) -> int:
@@ -95,7 +95,7 @@ class FanOutNestedWorkerApp:
 
         def worker() -> None:
             self.inner()
-            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+            self._fun_watch.mark_solved()
 
         wrapped_worker = registry.wrap_with_active_context(worker)
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -104,7 +104,7 @@ class FanOutNestedWorkerApp:
         return 3
 
 
-class FanOutCleanupApp:
+class FanOutCleanupApp(FunWatchMixin):
     def __init__(self) -> None:
         self.app_id = "fan_out_cleanup_app"
         self.runtime = "fan_out_cleanup_runtime"
@@ -114,11 +114,11 @@ class FanOutCleanupApp:
         registry = FunWatchRegistry.instance()
 
         def failing_worker() -> None:
-            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+            self._fun_watch.mark_solved()
             raise ValueError("worker failure")
 
         def raw_worker() -> None:
-            self._fw_ctx.mark_solved()  # type: ignore[attr-defined]
+            self._fun_watch.mark_solved()
 
         wrapped_failing_worker = registry.wrap_with_active_context(failing_worker)
 
@@ -146,14 +146,18 @@ class TestConcurrentCalls:
     def setup_method(self) -> None:
         FunWatchRegistry.reset()
 
-    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
     @patch(f"{_REGISTRY}.update_last_seen")
     @patch(f"{_REGISTRY}.register_function")
     def test_independent_solved_counters(
         self,
         mock_register: MagicMock,
         mock_last_seen: MagicMock,
-        mock_insert_log: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
     ) -> None:
         app = ThreadApp()
         results: list[int] = []
@@ -167,19 +171,23 @@ class TestConcurrentCalls:
                 results.append(future.result())
 
         assert len(results) == 8
-        assert mock_insert_log.call_count == 8
+        assert mock_complete_log.call_count == 8
 
-        for call in mock_insert_log.call_args_list:
+        for call in mock_complete_log.call_args_list:
             assert call[1]["solved"] == 10
 
-    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
     @patch(f"{_REGISTRY}.update_last_seen")
     @patch(f"{_REGISTRY}.register_function")
     def test_each_call_has_thread_id(
         self,
         mock_register: MagicMock,
         mock_last_seen: MagicMock,
-        mock_insert_log: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
     ) -> None:
         app = ThreadApp()
 
@@ -188,17 +196,21 @@ class TestConcurrentCalls:
             for f in futures:
                 f.result()
 
-        thread_ids = {call[1]["thread_id"] for call in mock_insert_log.call_args_list}
+        thread_ids = {call[1]["thread_id"] for call in mock_start_log.call_args_list}
         assert len(thread_ids) >= 1
 
-    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
     @patch(f"{_REGISTRY}.update_last_seen")
     @patch(f"{_REGISTRY}.register_function")
     def test_shared_instance_context_isolation_under_overlap(
         self,
         mock_register: MagicMock,
         mock_last_seen: MagicMock,
-        mock_insert_log: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
     ) -> None:
         app = SharedInstanceRaceApp()
 
@@ -210,58 +222,70 @@ class TestConcurrentCalls:
             results = [future.result() for future in futures]
 
         assert sorted(results) == [1, 80]
-        assert mock_insert_log.call_count == 2
+        assert mock_complete_log.call_count == 2
 
-        solved_values = sorted(call[1]["solved"] for call in mock_insert_log.call_args_list)
+        solved_values = sorted(call[1]["solved"] for call in mock_complete_log.call_args_list)
         assert solved_values == [1, 80]
 
-    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
     @patch(f"{_REGISTRY}.update_last_seen")
     @patch(f"{_REGISTRY}.register_function")
     def test_child_threads_inherit_parent_context_via_wrapper(
         self,
         mock_register: MagicMock,
         mock_last_seen: MagicMock,
-        mock_insert_log: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
     ) -> None:
         app = FanOutApp()
 
         result = app.run_with_wrapper(12)
 
         assert result == 12
-        assert mock_insert_log.call_count == 1
-        log_kwargs = mock_insert_log.call_args[1]
+        assert mock_complete_log.call_count == 1
+        log_kwargs = mock_complete_log.call_args[1]
         assert log_kwargs["solved"] == 12
         assert log_kwargs["failed"] == 0
 
-    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
     @patch(f"{_REGISTRY}.update_last_seen")
     @patch(f"{_REGISTRY}.register_function")
     def test_wrapped_worker_keeps_parent_context_after_nested_invocation(
         self,
         mock_register: MagicMock,
         mock_last_seen: MagicMock,
-        mock_insert_log: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
     ) -> None:
         app = FanOutNestedWorkerApp()
 
         result = app.run_worker_nested_update()
 
         assert result == 3
-        assert mock_insert_log.call_count == 2
+        assert mock_complete_log.call_count == 2
 
-        rows = [call[1] for call in mock_insert_log.call_args_list]
+        rows = [call[1] for call in mock_complete_log.call_args_list]
         assert any(row["solved"] == 2 and row["failed"] == 0 for row in rows)
         assert any(row["solved"] == 1 and row["failed"] == 0 for row in rows)
 
-    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
     @patch(f"{_REGISTRY}.update_last_seen")
     @patch(f"{_REGISTRY}.register_function")
     def test_wrap_with_active_context_unbinds_on_worker_exception(
         self,
         mock_register: MagicMock,
         mock_last_seen: MagicMock,
-        mock_insert_log: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
     ) -> None:
         app = FanOutCleanupApp()
 
@@ -269,16 +293,20 @@ class TestConcurrentCalls:
 
         assert first_error == "ValueError"
         assert second_error == "RuntimeError"
-        assert mock_insert_log.call_count == 1
+        assert mock_complete_log.call_count == 1
 
-    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
     @patch(f"{_REGISTRY}.update_last_seen")
     @patch(f"{_REGISTRY}.register_function")
     def test_child_thread_without_wrapper_raises_runtime_error(
         self,
         mock_register: MagicMock,
         mock_last_seen: MagicMock,
-        mock_insert_log: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
     ) -> None:
         app = FanOutApp()
 
@@ -290,14 +318,18 @@ class TestExecutionOrderSequencing:
     def setup_method(self) -> None:
         FunWatchRegistry.reset()
 
-    @patch(f"{_REGISTRY}.insert_function_log")
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
     @patch(f"{_REGISTRY}.update_last_seen")
     @patch(f"{_REGISTRY}.register_function")
     def test_sequential_calls_increment_execution_order(
         self,
         mock_register: MagicMock,
         mock_last_seen: MagicMock,
-        mock_insert_log: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
     ) -> None:
         app = ThreadApp()
         app.simple()
@@ -306,6 +338,17 @@ class TestExecutionOrderSequencing:
 
         execution_orders = [
             call[1]["execution_order"]
-            for call in mock_insert_log.call_args_list
+            for call in mock_start_log.call_args_list
         ]
         assert execution_orders == [1, 2, 3]
+
+    def test_counter_cleanup_on_runtime_change(self) -> None:
+        registry = FunWatchRegistry.instance()
+        tid = 1
+
+        assert registry.next_execution_order("runtime_a", tid) == 1
+        assert registry.next_execution_order("runtime_a", tid) == 2
+        assert registry.next_execution_order("runtime_a", tid) == 3
+
+        assert registry.next_execution_order("runtime_b", tid) == 1
+        assert registry.next_execution_order("runtime_b", tid) == 2

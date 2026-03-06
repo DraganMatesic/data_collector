@@ -12,7 +12,7 @@ from data_collector.tables.apps import (
     CodebookFatalFlags,
     CodebookRunStatus,
 )
-from data_collector.tables.log import CodebookLogLevel, FunctionLog, Logs
+from data_collector.tables.log import CodebookLogLevel, FunctionLog, FunctionLogError, Logs
 from data_collector.tables.notifications import CodebookAlertSeverity
 from data_collector.tables.runtime import CodebookRuntimeCodes, Runtime
 from data_collector.tables.shared import Base
@@ -35,6 +35,7 @@ __all__ = [
     "CodebookRuntimeCodes",
     "FatalFlag",
     "FunctionLog",
+    "FunctionLogError",
     "Logs",
     "RunStatus",
     "Runtime",

@@ -1,7 +1,7 @@
 """Logging ORM tables and related codebooks."""
 
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, String, Text, func, text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func, text
 
 from data_collector.tables.apps import AppFunctions, Apps
 from data_collector.tables.runtime import Runtime
@@ -42,7 +42,7 @@ class Logs(Base):
 
 
     call_chain = Column(Text, doc="Contains call chain from root caller to actual logging caller")
-    instance_id = Column(Integer, doc="ID of instance from what logging data in specified function is coming")
+    thread_id = Column(BigInteger, doc="OS thread ID from threading.get_ident(), auto-bound by @fun_watch")
     lineno = Column(Integer, doc="Indicates line number where logging function was called")
 
     log_level= Column(Integer,
@@ -51,6 +51,7 @@ class Logs(Base):
                       doc="Default numeric python logging levels")
 
     msg = Column(Text, doc="Logging message that is emitted")
+    context_json = Column(Text, nullable=True, doc="Arbitrary structured context from structured logging")
     runtime = Column(String(length=64), ForeignKey(Runtime.runtime, ondelete="CASCADE"), index=True)
     date_created = Column(DateTime, server_default=text("NOW()"))
 
@@ -66,13 +67,18 @@ class FunctionLog(Base):
         ForeignKey(AppFunctions.function_hash, ondelete="CASCADE"),
         index=True,
     )
-    execution_order = Column(Integer)
+    execution_order = Column(BigInteger, nullable=False)
+    thread_execution_order = Column(BigInteger, nullable=False, server_default=text("0"))
+    log_role = Column(String(16), nullable=False, server_default=text("'single'"))
+    parent_log_id = Column(BigInteger)
     main_app = Column(String(64), index=True)
     app_id = Column(String(64), index=True)
     thread_id = Column(BigInteger)
     task_size = Column(BigInteger)
     solved = Column(Integer, server_default=text("0"))
     failed = Column(Integer, server_default=text("0"))
+    processed_count = Column(BigInteger, nullable=False, server_default=text("0"))
+    is_success = Column(Boolean, nullable=False, server_default=text("true"))
     start_time = Column(DateTime)
     end_time = Column(DateTime)
     totals = Column(Integer)
@@ -83,7 +89,28 @@ class FunctionLog(Base):
         ForeignKey(Runtime.runtime, ondelete="CASCADE"),
         index=True,
     )
-    sha = Column(String(64), index=True)
-    archive = Column(DateTime, comment="Soft delete timestamp")
     date_created = Column(DateTime, server_default=func.now())
-    date_modified = Column(DateTime)
+
+
+class FunctionLogError(Base):
+    """Error details for failed @fun_watch invocations."""
+
+    __tablename__ = "function_log_error"
+
+    id = auto_increment_column()
+    function_log_id = Column(
+        BigInteger,
+        ForeignKey(FunctionLog.id, ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    error_type = Column(String(256), doc="Exception class name")
+    error_message = Column(Text, doc="Exception message string")
+    item_error_count = Column(
+        Integer, nullable=False, server_default=text("0"),
+        doc="Count of items with typed errors via mark_failed(error_type=...)",
+    )
+    item_error_types_json = Column(Text, doc="JSON: error type -> count mapping")
+    item_error_samples_json = Column(Text, doc="JSON: error type -> sample messages (max 5 per type)")
+    date_created = Column(DateTime, server_default=func.now())

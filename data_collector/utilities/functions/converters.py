@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import is_dataclass
-from typing import Any
+from typing import Any, cast
 
 _SENTINEL = object()
 
@@ -43,11 +43,12 @@ def object_to_dict(obj: Any) -> dict[str, Any] | Any:
     Best-effort conversion of obj to a plain `dict` suitable for deterministic hashing.
     """
 
-    # If it is mapping return dict version, without callables, or non str keys
+    # If it is a mapping, return dict version without callables or private keys
     if isinstance(obj, Mapping):
+        obj_map = dict(cast(Mapping[str, Any], obj))
         return {
-            k: v for k, v in obj.items()
-            if not callable(v) and (isinstance(k, str) and not k.startswith("_"))
+            k: v for k, v in obj_map.items()
+            if not callable(v) and not k.startswith("_")
         }
 
     # Dataclass instances are converted through vars(...)
@@ -59,10 +60,10 @@ def object_to_dict(obj: Any) -> dict[str, Any] | Any:
         }
 
     # If it is generic object with attribute __dict__
-    obj_dict = getattr(obj, "__dict__", _SENTINEL)
-    if isinstance(obj_dict, dict):
+    raw = getattr(obj, "__dict__", _SENTINEL)
+    if isinstance(raw, dict):
         clean: dict[str, Any] = {}
-        for key, val in obj_dict.items():
+        for key, val in cast(dict[str, Any], raw).items():
             if key.startswith("_") or callable(val):
                 continue
             clean[key] = val
