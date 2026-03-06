@@ -13,3 +13,4 @@ code-workspace
 .pylint_latest.txt
 CLAUDE.md
 memory
+error.log
