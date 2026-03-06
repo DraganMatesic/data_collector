@@ -84,7 +84,7 @@ def test_fatal_flag_values() -> None:
 
 
 def test_fatal_flag_member_count() -> None:
-    assert len(FatalFlag) == 3
+    assert len(FatalFlag) == 4
 
 
 # ---------------------------------------------------------------------------
