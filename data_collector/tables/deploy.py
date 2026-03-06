@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
+
+import requests as http_requests
 
 from data_collector.enums import AlertSeverity, CmdFlag, CmdName, FatalFlag, LogLevel, RunStatus, RuntimeExitCode
-from data_collector.settings.main import MainDatabaseSettings
+from data_collector.settings.main import LogSettings, MainDatabaseSettings, SplunkAdminSettings
 from data_collector.tables.apps import CodebookCommandFlags, CodebookCommandList, CodebookFatalFlags, CodebookRunStatus
 from data_collector.tables.log import CodebookLogLevel
 from data_collector.tables.notifications import CodebookAlertSeverity
@@ -25,8 +27,21 @@ class SeedData:
     data_label: str
 
 
+class _SplunkConfig(NamedTuple):
+    """Resolved Splunk Management API connection parameters."""
+
+    auth: tuple[str, str]
+    base_url: str
+    verify: bool
+    index_name: str
+    sourcetype: str
+
+
 class Deploy:
     """Create/drop framework tables and seed codebooks."""
+
+    _SPLUNK_TIMEOUT: int = 10
+    _SPLUNK_DELETE_TIMEOUT: int = 30
 
     def __init__(self) -> None:
         self.database = Database(MainDatabaseSettings())
@@ -76,6 +91,7 @@ class Deploy:
             seed_data.append(SeedData(data=cmd_list, data_label="cmd_list"))
 
             fatal_flags = [
+                CodebookFatalFlags(id=FatalFlag.NONE.value, description="No fatal condition"),
                 CodebookFatalFlags(id=FatalFlag.FAILED_TO_START.value, description="Failed to start"),
                 CodebookFatalFlags(id=FatalFlag.APP_STOPPED_ALERT_SENT.value, description="App stopped, alert sent"),
                 CodebookFatalFlags(id=FatalFlag.UNEXPECTED_BEHAVIOUR.value, description="Unexpected behaviour"),
@@ -116,3 +132,165 @@ class Deploy:
                     self.logger.error("Failed to populate %s: %s", seed.data_label, exc)
 
         return success
+
+    def _get_splunk_config(self) -> _SplunkConfig | None:
+        """Resolve Splunk Management API settings; return None when credentials are missing."""
+        log_settings = LogSettings()
+        admin = SplunkAdminSettings()
+
+        if not admin.admin_user or not admin.admin_password:
+            self.logger.error("DC_SPLUNK_ADMIN_USER and DC_SPLUNK_ADMIN_PASSWORD must be set.")
+            return None
+
+        return _SplunkConfig(
+            auth=(admin.admin_user, admin.admin_password),
+            base_url=admin.mgmt_url.rstrip("/"),
+            verify=admin.verify_tls,
+            index_name=log_settings.splunk_index,
+            sourcetype=log_settings.splunk_sourcetype,
+        )
+
+    def setup_splunk(self) -> bool:
+        """Create Splunk index and sourcetype via Management API.
+
+        Reads index name and sourcetype from LogSettings, admin credentials
+        from SplunkAdminSettings. Skips creation if the index already exists.
+
+        Returns:
+            True if provisioning succeeded or was already done, False on error.
+        """
+        cfg = self._get_splunk_config()
+        if cfg is None:
+            return False
+
+        if not self._splunk_ensure_index(cfg.base_url, cfg.auth, cfg.verify, cfg.index_name):
+            return False
+
+        return self._splunk_ensure_sourcetype(cfg.base_url, cfg.auth, cfg.verify, cfg.sourcetype)
+
+    def clean_splunk(self) -> bool:
+        """Empty all data from the Splunk index while keeping its definition.
+
+        Returns:
+            True if the clean succeeded, False on error.
+        """
+        cfg = self._get_splunk_config()
+        if cfg is None:
+            return False
+
+        delete_url = f"{cfg.base_url}/services/data/indexes/{cfg.index_name}"
+        try:
+            resp = http_requests.delete(
+                delete_url, auth=cfg.auth, verify=cfg.verify,
+                params={"output_mode": "json"}, timeout=self._SPLUNK_DELETE_TIMEOUT,
+            )
+            if not self._splunk_check_auth(resp, f"delete index '{cfg.index_name}'", "indexes_edit"):
+                return False
+            resp.raise_for_status()
+            self.logger.info("Splunk index '%s' deleted.", cfg.index_name)
+        except http_requests.RequestException as exc:
+            self.logger.error("Failed to delete Splunk index '%s': %s", cfg.index_name, exc)
+            return False
+
+        if not self._splunk_ensure_index(cfg.base_url, cfg.auth, cfg.verify, cfg.index_name):
+            return False
+
+        self.logger.info("Splunk index '%s' recreated (data cleared).", cfg.index_name)
+        return True
+
+    def _splunk_check_auth(self, resp: http_requests.Response, action: str, capability: str) -> bool:
+        """Return False and log when Splunk returns 401/403; True otherwise."""
+        if resp.status_code == 401:
+            self.logger.error("Splunk authentication failed (%s). Check DC_SPLUNK_ADMIN_USER/PASSWORD.", action)
+            return False
+        if resp.status_code == 403:
+            self.logger.error(
+                "Splunk authorization failed (%s). "
+                "Ask your Splunk admin to grant the '%s' capability to your role.",
+                action,
+                capability,
+            )
+            return False
+        return True
+
+    def _splunk_ensure_index(
+        self,
+        base: str,
+        auth: tuple[str, str],
+        verify: bool,
+        index_name: str,
+    ) -> bool:
+        """Check if a Splunk index exists; create it if missing."""
+        url = f"{base}/services/data/indexes/{index_name}"
+        try:
+            resp = http_requests.get(
+                url, auth=auth, verify=verify,
+                params={"output_mode": "json"}, timeout=self._SPLUNK_TIMEOUT,
+            )
+            if not self._splunk_check_auth(resp, f"check index '{index_name}'", "indexes_edit"):
+                return False
+            if resp.status_code == 200:
+                self.logger.info("Splunk index '%s' already exists.", index_name)
+                return True
+        except http_requests.RequestException as exc:
+            self.logger.error("Failed to check Splunk index '%s': %s", index_name, exc)
+            return False
+
+        create_url = f"{base}/services/data/indexes"
+        try:
+            resp = http_requests.post(
+                create_url,
+                auth=auth,
+                verify=verify,
+                data={"name": index_name, "output_mode": "json"},
+                timeout=self._SPLUNK_TIMEOUT,
+            )
+            if not self._splunk_check_auth(resp, f"create index '{index_name}'", "indexes_edit"):
+                return False
+            resp.raise_for_status()
+            self.logger.info("Splunk index '%s' created.", index_name)
+            return True
+        except http_requests.RequestException as exc:
+            self.logger.error("Failed to create Splunk index '%s': %s", index_name, exc)
+            return False
+
+    def _splunk_ensure_sourcetype(
+        self,
+        base: str,
+        auth: tuple[str, str],
+        verify: bool,
+        sourcetype: str,
+    ) -> bool:
+        """Check if a Splunk sourcetype exists; create it if missing."""
+        url = f"{base}/servicesNS/nobody/search/configs/conf-props/{sourcetype}"
+        try:
+            resp = http_requests.get(
+                url, auth=auth, verify=verify,
+                params={"output_mode": "json"}, timeout=self._SPLUNK_TIMEOUT,
+            )
+            if not self._splunk_check_auth(resp, f"check sourcetype '{sourcetype}'", "admin_all_objects"):
+                return False
+            if resp.status_code == 200:
+                self.logger.info("Splunk sourcetype '%s' already exists.", sourcetype)
+                return True
+        except http_requests.RequestException as exc:
+            self.logger.error("Failed to check Splunk sourcetype '%s': %s", sourcetype, exc)
+            return False
+
+        create_url = f"{base}/servicesNS/nobody/search/configs/conf-props"
+        try:
+            resp = http_requests.post(
+                create_url,
+                auth=auth,
+                verify=verify,
+                data={"name": sourcetype, "output_mode": "json"},
+                timeout=self._SPLUNK_TIMEOUT,
+            )
+            if not self._splunk_check_auth(resp, f"create sourcetype '{sourcetype}'", "admin_all_objects"):
+                return False
+            resp.raise_for_status()
+            self.logger.info("Splunk sourcetype '%s' created.", sourcetype)
+            return True
+        except http_requests.RequestException as exc:
+            self.logger.error("Failed to create Splunk sourcetype '%s': %s", sourcetype, exc)
+            return False
