@@ -135,7 +135,11 @@ class Apps(Base):
         server_default=text("0"),
         comment="Run status of app. FK to c_run_status"
     )
-    progress = Column(Text, comment="Optional progress text")
+    progress = Column(Integer, comment="Completion percentage (0-100)")
+    task_size = Column(Integer, comment="Total items to process in current loop")
+    solved = Column(Integer, server_default=text("0"), comment="Successfully processed items")
+    failed = Column(Integer, server_default=text("0"), comment="Items that ended with error")
+    eta = Column(DateTime, comment="Estimated time of completion")
 
     # Fatal error tracking
     fatal_flag = Column(

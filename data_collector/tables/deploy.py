@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 import requests as http_requests
+from sqlalchemy import Table
 
 from data_collector.enums import AlertSeverity, CmdFlag, CmdName, FatalFlag, LogLevel, RunStatus, RuntimeExitCode
 from data_collector.settings.main import LogSettings, MainDatabaseSettings, SplunkAdminSettings
@@ -48,18 +50,45 @@ class Deploy:
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
 
-    def create_tables(self) -> None:
-        """Create tables defined in `Base` metadata."""
-        Base.metadata.create_all(self.database.engine)
+    def create_tables(
+        self,
+        tables: Sequence[Table] | None = None,
+        schema: str | None = None,
+    ) -> None:
+        """Create tables. No args = all framework tables. With args = specific tables.
 
-    def drop_tables(self) -> None:
-        """Drop tables defined in `Base` metadata."""
-        Base.metadata.drop_all(self.database.engine)
+        Args:
+            tables: Specific tables to create. None = all Base metadata tables.
+            schema: If provided, ensure schema exists before creating tables.
+        """
+        if schema:
+            self.database.ensure_schema(schema)
+        Base.metadata.create_all(self.database.engine, tables=tables)
 
-    def recreate_tables(self) -> None:
-        """Drop then create framework tables."""
-        self.drop_tables()
-        self.create_tables()
+    def drop_tables(
+        self,
+        tables: Sequence[Table] | None = None,
+    ) -> None:
+        """Drop tables. No args = all framework tables. With args = specific tables.
+
+        Args:
+            tables: Specific tables to drop. None = all Base metadata tables.
+        """
+        Base.metadata.drop_all(self.database.engine, tables=tables)
+
+    def recreate_tables(
+        self,
+        tables: Sequence[Table] | None = None,
+        schema: str | None = None,
+    ) -> None:
+        """Drop then create tables. No args = all framework tables.
+
+        Args:
+            tables: Specific tables to recreate. None = all Base metadata tables.
+            schema: If provided, ensure schema exists before creating tables.
+        """
+        self.drop_tables(tables=tables)
+        self.create_tables(tables=tables, schema=schema)
 
     def populate_tables(self) -> bool:
         """Insert/update codebook seed rows using SHA merge flow.

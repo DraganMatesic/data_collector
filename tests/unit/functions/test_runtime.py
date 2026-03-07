@@ -3,6 +3,9 @@ from types import SimpleNamespace
 
 from data_collector.utilities.functions.runtime import (
     bulk_hash,
+    get_app_id,
+    get_app_info,
+    get_parent_id,
     is_module_available,
     list_enum_values,
     make_hash,
@@ -80,3 +83,34 @@ def test_obj_diff_with_single_and_composite_keys() -> None:
     )
     assert [(obj.company_id, obj.record_id) for obj in to_insert_composite] == [(11, 300)]
     assert [(obj.company_id, obj.record_id) for obj in to_remove_composite] == [(10, 100)]
+
+
+def test_get_parent_id_is_deterministic_sha256() -> None:
+    result = get_parent_id("examples", "scraping")
+    assert len(result) == 64
+    assert result == get_parent_id("examples", "scraping")
+    assert result != get_parent_id("examples", "other")
+
+
+def test_get_app_id_is_deterministic_sha256() -> None:
+    result = get_app_id("examples", "scraping", "books")
+    assert len(result) == 64
+    assert result == get_app_id("examples", "scraping", "books")
+    assert result != get_app_id("examples", "scraping", "quotes")
+
+
+def test_get_app_info_returns_app_info_with_parent_id() -> None:
+    info = get_app_info("data_collector/examples/scraping/books/main.py")
+    assert not isinstance(info, str)
+    assert info["app_group"] == "examples"
+    assert info["app_parent"] == "scraping"
+    assert info["app_name"] == "books"
+    assert info["module_name"] == "main.py"
+    assert info["app_id"] == get_app_id("examples", "scraping", "books")
+    assert info["parent_id"] == get_parent_id("examples", "scraping")
+
+
+def test_get_app_info_only_id_returns_string() -> None:
+    result = get_app_info("data_collector/examples/scraping/books/main.py", only_id=True)
+    assert isinstance(result, str)
+    assert len(result) == 64

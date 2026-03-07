@@ -672,6 +672,26 @@ class Database:
         else:
             return "unknown"
 
+    def ensure_schema(self, schema_name: str) -> None:
+        """Create a database schema if it does not already exist.
+
+        Args:
+            schema_name: Name of the schema to create.
+        """
+        from data_collector.settings.main import DatabaseType
+
+        with self.engine.connect() as conn:
+            if self.settings.database_type == DatabaseType.POSTGRES:
+                conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}"))
+            elif self.settings.database_type == DatabaseType.MSSQL:
+                conn.execute(text(
+                    f"IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = '{schema_name}') "
+                    f"EXEC('CREATE SCHEMA [{schema_name}]')"
+                ))
+            else:
+                raise NotImplementedError(f"ensure_schema not implemented for {self.settings.database_type}")
+            conn.commit()
+
     def extract_database_and_schema(self, db_object: Any) -> tuple[str | None, str]:
         """
         Extracts (database_name, schema_name) from a model's __table__.schema definition.
