@@ -678,8 +678,8 @@ class TestStructlogContextBinding:
 
             @fun_watch
             def do_work(self, items: list[str]) -> None:
-                ctx = structlog.contextvars.get_contextvars()
-                captured["function_id"] = ctx.get("function_id", "")
+                structlog_context = structlog.contextvars.get_contextvars()
+                captured["function_id"] = structlog_context.get("function_id", "")
 
         app = CapturingApp()
         app.do_work(["a"])
@@ -708,8 +708,8 @@ class TestStructlogContextBinding:
 
         app = SimpleApp()
         app.do_work()
-        ctx = structlog.contextvars.get_contextvars()
-        assert "function_id" not in ctx
+        structlog_context = structlog.contextvars.get_contextvars()
+        assert "function_id" not in structlog_context
 
     @patch(f"{_REGISTRY}.update_parent_log_role")
     @patch(f"{_REGISTRY}.complete_function_log")
@@ -732,8 +732,8 @@ class TestStructlogContextBinding:
 
             @fun_watch
             def do_work(self, items: list[str]) -> None:
-                ctx = structlog.contextvars.get_contextvars()
-                captured["thread_id"] = ctx.get("thread_id", 0)
+                structlog_context = structlog.contextvars.get_contextvars()
+                captured["thread_id"] = structlog_context.get("thread_id", 0)
 
         app = CapturingApp()
         app.do_work(["a"])
@@ -762,8 +762,8 @@ class TestStructlogContextBinding:
 
         app = SimpleApp()
         app.do_work()
-        ctx = structlog.contextvars.get_contextvars()
-        assert "thread_id" not in ctx
+        structlog_context = structlog.contextvars.get_contextvars()
+        assert "thread_id" not in structlog_context
 
     @patch(f"{_REGISTRY}.update_parent_log_role")
     @patch(f"{_REGISTRY}.complete_function_log")
@@ -788,16 +788,16 @@ class TestStructlogContextBinding:
 
             @fun_watch
             def inner(self) -> None:
-                ctx = structlog.contextvars.get_contextvars()
-                captured_inner["function_id"] = ctx.get("function_id", "")
+                structlog_context = structlog.contextvars.get_contextvars()
+                captured_inner["function_id"] = structlog_context.get("function_id", "")
 
             @fun_watch
             def outer(self) -> None:
-                ctx = structlog.contextvars.get_contextvars()
-                captured_outer_before["function_id"] = ctx.get("function_id", "")
+                structlog_context = structlog.contextvars.get_contextvars()
+                captured_outer_before["function_id"] = structlog_context.get("function_id", "")
                 self.inner()
-                ctx = structlog.contextvars.get_contextvars()
-                captured_outer_after["function_id"] = ctx.get("function_id", "")
+                structlog_context = structlog.contextvars.get_contextvars()
+                captured_outer_after["function_id"] = structlog_context.get("function_id", "")
 
         app = NestingApp()
         app.outer()
@@ -828,8 +828,8 @@ class TestStructlogContextBinding:
 
             @fun_watch
             def do_work(self, items: list[str]) -> None:
-                ctx = structlog.contextvars.get_contextvars()
-                captured["call_chain"] = ctx.get("call_chain", "")
+                structlog_context = structlog.contextvars.get_contextvars()
+                captured["call_chain"] = structlog_context.get("call_chain", "")
 
         app = ChainApp()
         app.do_work(["a"])
@@ -857,8 +857,8 @@ class TestStructlogContextBinding:
 
             @fun_watch
             def inner(self) -> None:
-                ctx = structlog.contextvars.get_contextvars()
-                captured_inner["call_chain"] = ctx.get("call_chain", "")
+                structlog_context = structlog.contextvars.get_contextvars()
+                captured_inner["call_chain"] = structlog_context.get("call_chain", "")
 
             @fun_watch
             def outer(self) -> None:
@@ -894,11 +894,11 @@ class TestStructlogContextBinding:
 
             @fun_watch
             def outer(self) -> None:
-                ctx = structlog.contextvars.get_contextvars()
-                captured_before["call_chain"] = ctx.get("call_chain", "")
+                structlog_context = structlog.contextvars.get_contextvars()
+                captured_before["call_chain"] = structlog_context.get("call_chain", "")
                 self.inner()
-                ctx = structlog.contextvars.get_contextvars()
-                captured_after["call_chain"] = ctx.get("call_chain", "")
+                structlog_context = structlog.contextvars.get_contextvars()
+                captured_after["call_chain"] = structlog_context.get("call_chain", "")
 
         app = RestoreChainApp()
         app.outer()
@@ -928,8 +928,8 @@ class TestStructlogContextBinding:
 
         app = UnbindChainApp()
         app.do_work()
-        ctx = structlog.contextvars.get_contextvars()
-        assert "call_chain" not in ctx
+        structlog_context = structlog.contextvars.get_contextvars()
+        assert "call_chain" not in structlog_context
 
     @patch(f"{_REGISTRY}.update_parent_log_role")
     @patch(f"{_REGISTRY}.complete_function_log")
@@ -955,8 +955,8 @@ class TestStructlogContextBinding:
         app = FailingApp()
         with pytest.raises(ValueError):
             app.do_work()
-        ctx = structlog.contextvars.get_contextvars()
-        assert "function_id" not in ctx
+        structlog_context = structlog.contextvars.get_contextvars()
+        assert "function_id" not in structlog_context
 
 
 class TestExceptionLogging:
@@ -1031,9 +1031,51 @@ class TestLifecycleLogging:
     ) -> None:
         app = FakeApp()
         app.process_items(["a"])
-        started_calls = [c for c in mock_logger.debug.call_args_list if c[0][0] == "Function started"]
+        started_calls = [c for c in mock_logger.log.call_args_list if c[0][1] == "Function started"]
         assert len(started_calls) == 1
         assert started_calls[0][1]["function_name"] == "process_items"
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    @patch("data_collector.utilities.fun_watch.logger")
+    def test_function_started_omits_task_size_when_none(
+        self,
+        mock_logger: MagicMock,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        app = FakeApp()
+        app.no_args_method()
+        started_calls = [c for c in mock_logger.log.call_args_list if c[0][1] == "Function started"]
+        assert len(started_calls) == 1
+        assert "task_size" not in started_calls[0][1]
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    @patch("data_collector.utilities.fun_watch.logger")
+    def test_function_started_includes_task_size_when_detected(
+        self,
+        mock_logger: MagicMock,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        app = FakeApp()
+        app.process_items(["a", "b", "c"])
+        started_calls = [c for c in mock_logger.log.call_args_list if c[0][1] == "Function started"]
+        assert len(started_calls) == 1
+        assert started_calls[0][1]["task_size"] == 3
 
     @patch(f"{_REGISTRY}.update_parent_log_role")
     @patch(f"{_REGISTRY}.complete_function_log")
@@ -1052,7 +1094,7 @@ class TestLifecycleLogging:
     ) -> None:
         app = FakeApp()
         app.process_items(["a", "b", "c"])
-        completed_calls = [c for c in mock_logger.debug.call_args_list if c[0][0] == "Function completed"]
+        completed_calls = [c for c in mock_logger.log.call_args_list if c[0][1] == "Function completed"]
         assert len(completed_calls) == 1
         kwargs = completed_calls[0][1]
         assert kwargs["function_name"] == "process_items"
@@ -1081,9 +1123,9 @@ class TestLifecycleLogging:
         app = FakeApp()
         with pytest.raises(ValueError):
             app.failing_method(["x"])
-        completed_calls = [c for c in mock_logger.debug.call_args_list if c[0][0] == "Function completed"]
+        completed_calls = [c for c in mock_logger.log.call_args_list if c[0][1] == "Function completed"]
         assert len(completed_calls) == 0
-        started_calls = [c for c in mock_logger.debug.call_args_list if c[0][0] == "Function started"]
+        started_calls = [c for c in mock_logger.log.call_args_list if c[0][1] == "Function started"]
         assert len(started_calls) == 1
 
     @patch(f"{_REGISTRY}.update_parent_log_role")
@@ -1103,9 +1145,9 @@ class TestLifecycleLogging:
     ) -> None:
         app = FakeApp()
         app.process_items(["a"])
-        started_calls = [c for c in mock_logger.debug.call_args_list if c[0][0] == "Function started"]
+        started_calls = [c for c in mock_logger.log.call_args_list if c[0][1] == "Function started"]
         assert started_calls[0][1]["call_chain"].endswith("FakeApp.process_items")
-        completed_calls = [c for c in mock_logger.debug.call_args_list if c[0][0] == "Function completed"]
+        completed_calls = [c for c in mock_logger.log.call_args_list if c[0][1] == "Function completed"]
         assert completed_calls[0][1]["call_chain"].endswith("FakeApp.process_items")
 
     @patch(f"{_REGISTRY}.update_parent_log_role")
@@ -1125,12 +1167,12 @@ class TestLifecycleLogging:
     ) -> None:
         app = FakeApp()
         app.process_items(["a"])
-        started_calls = [c for c in mock_logger.debug.call_args_list if c[0][0] == "Function started"]
+        started_calls = [c for c in mock_logger.log.call_args_list if c[0][1] == "Function started"]
         assert len(started_calls) == 1
         kwargs = started_calls[0][1]
         assert kwargs["module_name"] == "test_decorator.py"
         assert kwargs["module_path"].endswith("test_decorator.py")
-        completed_calls = [c for c in mock_logger.debug.call_args_list if c[0][0] == "Function completed"]
+        completed_calls = [c for c in mock_logger.log.call_args_list if c[0][1] == "Function completed"]
         assert len(completed_calls) == 1
         kwargs = completed_calls[0][1]
         assert kwargs["module_name"] == "test_decorator.py"
@@ -1186,9 +1228,9 @@ class TestLifecycleLogging:
 
         app = AppWithLogger()
         app.do_work(["a", "b"])
-        started_calls = [c for c in mock_app_logger.debug.call_args_list if c[0][0] == "Function started"]
+        started_calls = [c for c in mock_app_logger.log.call_args_list if c[0][1] == "Function started"]
         assert len(started_calls) == 1
-        completed_calls = [c for c in mock_app_logger.debug.call_args_list if c[0][0] == "Function completed"]
+        completed_calls = [c for c in mock_app_logger.log.call_args_list if c[0][1] == "Function completed"]
         assert len(completed_calls) == 1
         assert completed_calls[0][1]["solved"] == 2
 
@@ -1309,3 +1351,561 @@ class TestErrorColumnPropagation:
         assert kw["item_error_count"] == 2
         assert kw["item_error_types_json"] is not None
         assert "ProcessingError" in kw["item_error_types_json"]
+
+
+class TestTaskSizeOptOut:
+    """Verify task_size=False skips auto-detection from list args."""
+
+    def setup_method(self) -> None:
+        FunWatchRegistry.reset()
+        structlog.contextvars.clear_contextvars()
+
+    def teardown_method(self) -> None:
+        structlog.contextvars.clear_contextvars()
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_task_size_false_skips_detection(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+
+            @fun_watch(task_size=False)
+            def store(self, records: list[str]) -> None:
+                pass
+
+        app = App()
+        app.store(["a", "b", "c"])
+        kw = mock_start_log.call_args[1]
+        assert kw["task_size"] is None
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_bare_decorator_detects_task_size(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+
+            @fun_watch
+            def store(self, records: list[str]) -> None:
+                pass
+
+        app = App()
+        app.store(["a", "b", "c"])
+        kw = mock_start_log.call_args[1]
+        assert kw["task_size"] == 3
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_task_size_true_explicit(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+
+            @fun_watch(task_size=True)
+            def store(self, records: list[str]) -> None:
+                pass
+
+        app = App()
+        app.store(["a", "b", "c"])
+        kw = mock_start_log.call_args[1]
+        assert kw["task_size"] == 3
+
+
+class TestLogLifecycleControl:
+    """Verify log_lifecycle and log_level parameters."""
+
+    def setup_method(self) -> None:
+        FunWatchRegistry.reset()
+        structlog.contextvars.clear_contextvars()
+
+    def teardown_method(self) -> None:
+        structlog.contextvars.clear_contextvars()
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_log_lifecycle_false_suppresses_lifecycle_logs(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch(log_lifecycle=False)
+            def process(self) -> None:
+                pass
+
+        app = App()
+        app.process()
+        mock_logger.log.assert_not_called()
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_log_lifecycle_false_still_writes_function_log(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = MagicMock()
+
+            @fun_watch(log_lifecycle=False)
+            def process(self) -> None:
+                pass
+
+        app = App()
+        app.process()
+        mock_start_log.assert_called_once()
+        mock_complete_log.assert_called_once()
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_log_lifecycle_false_still_logs_exceptions(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch(log_lifecycle=False)
+            def process(self) -> None:
+                raise ValueError("test")
+
+        app = App()
+        with pytest.raises(ValueError):
+            app.process()
+        mock_logger.exception.assert_called_once()
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_log_lifecycle_true_default(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch
+            def process(self) -> None:
+                pass
+
+        app = App()
+        app.process()
+        log_calls = mock_logger.log.call_args_list
+        assert len(log_calls) == 2
+        assert log_calls[0][0][1] == "Function started"
+        assert log_calls[1][0][1] == "Function completed"
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_log_level_info_emits_at_info(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        import logging
+
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch(log_level=logging.INFO)
+            def process(self) -> None:
+                pass
+
+        app = App()
+        app.process()
+        log_calls = mock_logger.log.call_args_list
+        assert log_calls[0][0][0] == logging.INFO
+        assert log_calls[1][0][0] == logging.INFO
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_log_level_does_not_affect_exception_log(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        import logging
+
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch(log_level=logging.WARNING)
+            def process(self) -> None:
+                raise RuntimeError("boom")
+
+        app = App()
+        with pytest.raises(RuntimeError):
+            app.process()
+        mock_logger.exception.assert_called_once()
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_log_level_none_uses_registry_default(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        import logging
+
+        FunWatchRegistry.instance().set_default_lifecycle_log_level(logging.INFO)
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch
+            def process(self) -> None:
+                pass
+
+        app = App()
+        app.process()
+        log_calls = mock_logger.log.call_args_list
+        assert log_calls[0][0][0] == logging.INFO
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_log_level_explicit_overrides_registry(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        import logging
+
+        FunWatchRegistry.instance().set_default_lifecycle_log_level(logging.INFO)
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch(log_level=logging.WARNING)
+            def process(self) -> None:
+                pass
+
+        app = App()
+        app.process()
+        log_calls = mock_logger.log.call_args_list
+        assert log_calls[0][0][0] == logging.WARNING
+
+
+class TestExecutionOrderCounters:
+    """Verify global vs per-thread execution order counters."""
+
+    def setup_method(self) -> None:
+        FunWatchRegistry.reset()
+
+    def test_global_order_increments_across_threads(self) -> None:
+        registry = FunWatchRegistry.instance()
+        g1, _t1 = registry.next_execution_order("rt1", 100)
+        g2, _t2 = registry.next_execution_order("rt1", 200)
+        g3, _t3 = registry.next_execution_order("rt1", 100)
+        g4, _t4 = registry.next_execution_order("rt1", 200)
+        assert [g1, g2, g3, g4] == [1, 2, 3, 4]
+
+    def test_thread_order_independent_per_thread(self) -> None:
+        registry = FunWatchRegistry.instance()
+        _g1, t1 = registry.next_execution_order("rt1", 100)
+        _g2, t2 = registry.next_execution_order("rt1", 200)
+        _g3, t3 = registry.next_execution_order("rt1", 100)
+        _g4, t4 = registry.next_execution_order("rt1", 200)
+        assert [t1, t3] == [1, 2]
+        assert [t2, t4] == [1, 2]
+
+    def test_single_thread_both_orders_equal(self) -> None:
+        registry = FunWatchRegistry.instance()
+        g1, t1 = registry.next_execution_order("rt1", 100)
+        g2, t2 = registry.next_execution_order("rt1", 100)
+        assert g1 == t1 == 1
+        assert g2 == t2 == 2
+
+
+class TestLifecycleLogFields:
+    """Verify lifecycle logs include log_id and execution_order for correlation."""
+
+    def setup_method(self) -> None:
+        FunWatchRegistry.reset()
+        structlog.contextvars.clear_contextvars()
+
+    def teardown_method(self) -> None:
+        structlog.contextvars.clear_contextvars()
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=42)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_started_log_includes_log_id_and_execution_order(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch
+            def process(self) -> None:
+                pass
+
+        app = App()
+        app.process()
+        started_call = mock_logger.log.call_args_list[0]
+        kwargs = started_call[1]
+        assert kwargs["log_id"] == 42
+        assert kwargs["execution_order"] == 1
+        assert kwargs["log_role"] == "single"
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=42)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_completed_log_includes_log_id(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch
+            def process(self) -> None:
+                pass
+
+        app = App()
+        app.process()
+        completed_call = mock_logger.log.call_args_list[1]
+        kwargs = completed_call[1]
+        assert kwargs["log_id"] == 42
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=42)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_exception_log_includes_log_id(
+        self,
+        _mock_register: MagicMock,
+        _mock_last_seen: MagicMock,
+        _mock_start_log: MagicMock,
+        _mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch
+            def process(self) -> None:
+                raise ValueError("test")
+
+        app = App()
+        with pytest.raises(ValueError):
+            app.process()
+        exception_call = mock_logger.exception.call_args
+        kwargs = exception_call[1]
+        assert kwargs["log_id"] == 42
+
+
+class TestModulePathResolution:
+    """Test that module_path resolves to instance class for inherited methods."""
+
+    def setup_method(self) -> None:
+        FunWatchRegistry.reset()
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_own_method_uses_definition_file(
+        self,
+        mock_register: MagicMock,
+        mock_last_seen: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        mock_logger = MagicMock()
+
+        class App(FunWatchMixin):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+            @fun_watch
+            def do_work(self) -> None:
+                pass
+
+        app = App()
+        app.do_work()
+
+        log_call = mock_logger.log.call_args
+        assert log_call is not None
+        assert log_call[1]["module_name"] == "test_decorator.py"
+        assert "test_decorator.py" in log_call[1]["module_path"]
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_inherited_method_resolves_to_instance_class_module(
+        self,
+        mock_register: MagicMock,
+        mock_last_seen: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        """When a @fun_watch method is inherited, module_path resolves to the subclass module."""
+        mock_logger = MagicMock()
+
+        class Base(FunWatchMixin):
+            @fun_watch
+            def inherited_work(self) -> None:
+                pass
+
+        class Child(Base):
+            app_id = "test_app"
+            runtime = "test_runtime"
+            logger = mock_logger
+
+        # Simulate cross-module inheritance by patching the decorated func's __module__
+        original_method = Base.__dict__["inherited_work"]
+        original_module = original_method.__module__
+        original_method.__module__ = "data_collector.scraping.threaded"
+        try:
+            app = Child()
+            app.inherited_work()
+
+            log_call = mock_logger.log.call_args
+            assert log_call is not None
+            # module_path should resolve to the test file (Child's module), not threaded
+            assert log_call[1]["module_name"] == "test_decorator.py"
+            assert "test_decorator.py" in log_call[1]["module_path"]
+        finally:
+            original_method.__module__ = original_module
