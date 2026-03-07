@@ -152,6 +152,7 @@ class AppInfo(TypedDict):
     app_group: str
     app_parent: str
     app_name: str
+    parent_id: str
     module_name: str
     filepath: str
 
@@ -189,6 +190,19 @@ def _split_app_path(filepath: str, depth: int = -4) -> list[str]:
             f"Path '{filepath}' has {len(parts)} components, need at least {required}"
         )
     return list(parts[depth:])
+
+
+def get_parent_id(app_group: str, app_parent: str) -> str:
+    """Compute a deterministic parent identifier from the application hierarchy.
+
+    Concatenates ``app_group|app_parent`` with a pipe separator and
+    returns the SHA-256 hex digest (64 characters).
+
+    Args:
+        app_group: Top-level grouping (typically country code or ``"examples"``).
+        app_parent: Parent application or domain (e.g. ``"financials"``).
+    """
+    return hashlib.sha256(f"{app_group}|{app_parent}".encode()).hexdigest()
 
 
 def get_app_id(app_group: str, app_parent: str, app_name: str) -> str:
@@ -263,6 +277,7 @@ def get_app_info(filepath: str, only_id: bool = False, depth: int = -4) -> str |
         app_group=app_group,
         app_parent=app_parent,
         app_name=app_name,
+        parent_id=get_parent_id(app_group, app_parent),
         module_name=module_name,
         filepath=filepath,
     )
