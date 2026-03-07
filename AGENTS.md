@@ -45,6 +45,7 @@ All new code must pass all four gates. Do not skip any.
 - No emojis in code or documentation
 - No module-level mutable globals (use singleton classes with double-checked locking)
 - Google-style docstrings for public APIs
+- Variable names must be descriptive and self-explanatory. Abbreviations like `ctx`, `cb`, `evt`, `cfg` are not allowed. Use full words: `context`, `callback`, `event`, `config`. The reader should understand the variable's purpose without checking its assignment
 - Prefer editing existing files over creating new ones
 - Do not add features, refactor code, or make improvements beyond what was requested
 
