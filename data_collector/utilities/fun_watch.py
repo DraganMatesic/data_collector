@@ -10,6 +10,8 @@ from __future__ import annotations
 import functools
 import inspect
 import json
+import logging
+import sys
 import threading
 from collections.abc import Callable
 from contextvars import ContextVar, Token
@@ -67,6 +69,15 @@ def _find_root_caller() -> str | None:
     finally:
         del frame
     return None
+
+
+def _get_class_lineno(cls: type, fallback: int) -> int:
+    """Return the source line number of a class definition, or fallback."""
+    try:
+        _, lineno = inspect.findsource(cls)
+        return lineno
+    except (OSError, TypeError):
+        return fallback
 
 
 class FunWatchContext:
@@ -155,6 +166,10 @@ class _FunWatchContextProxy:
         """Forward failed counter updates to the active invocation context."""
         self._registry.get_active_context().mark_failed(count, error_type=error_type, error_message=error_message)
 
+    def set_task_size(self, size: int) -> None:
+        """Set the task_size on the active invocation context."""
+        self._registry.get_active_context().task_size = size
+
     def __getattr__(self, name: str) -> Any:
         """Forward attribute access to the active invocation context."""
         return getattr(self._registry.get_active_context(), name)
@@ -185,9 +200,12 @@ class FunWatchRegistry:
         self._registered_functions: dict[str, bool] = {}
         self._registration_lock = threading.Lock()
 
-        self._function_counters: dict[tuple[str, int], int] = {}
+        self._global_counters: dict[str, int] = {}
+        self._thread_counters: dict[tuple[str, int], int] = {}
         self._counter_lock = threading.Lock()
         self._current_runtime: str | None = None
+
+        self._default_lifecycle_log_level: int = logging.DEBUG
 
         self._system_db: Database | None = None
         self._db_lock = threading.Lock()
@@ -219,24 +237,43 @@ class FunWatchRegistry:
                     self._system_db = Database(MainDatabaseSettings())
         return self._system_db
 
-    def next_execution_order(self, runtime_id: str, thread_id: int) -> int:
-        """Return and increment the per-(runtime, thread) execution ordinal.
+    @property
+    def default_lifecycle_log_level(self) -> int:
+        """Return the default log level for @fun_watch lifecycle messages."""
+        return self._default_lifecycle_log_level
+
+    def set_default_lifecycle_log_level(self, level: int) -> None:
+        """Set the default log level for @fun_watch lifecycle messages.
+
+        Typically called from app main() after creating LogSettings:
+        ``FunWatchRegistry.instance().set_default_lifecycle_log_level(log_settings.log_level)``
+        """
+        self._default_lifecycle_log_level = level
+
+    def next_execution_order(self, runtime_id: str, thread_id: int) -> tuple[int, int]:
+        """Return and increment (global_order, thread_order) execution ordinals.
+
+        global_order increments across all threads (chronological).
+        thread_order increments independently per thread.
 
         Clears stale counters when a new runtime_id is detected to prevent
         unbounded memory growth in long-running processes.
         """
-        key = (runtime_id, thread_id)
+        thread_key = (runtime_id, thread_id)
         with self._counter_lock:
             if self._current_runtime is not None and self._current_runtime != runtime_id:
-                self._function_counters.clear()
+                self._global_counters.clear()
+                self._thread_counters.clear()
             self._current_runtime = runtime_id
-            current = self._function_counters.get(key, 0) + 1
-            self._function_counters[key] = current
-        return current
+            global_order = self._global_counters.get(runtime_id, 0) + 1
+            self._global_counters[runtime_id] = global_order
+            thread_order = self._thread_counters.get(thread_key, 0) + 1
+            self._thread_counters[thread_key] = thread_order
+        return global_order, thread_order
 
-    def bind_context(self, ctx: FunWatchContext) -> Token[FunWatchContext | None]:
+    def bind_context(self, context: FunWatchContext) -> Token[FunWatchContext | None]:
         """Bind invocation context for the current execution flow."""
-        return self._active_context.set(ctx)
+        return self._active_context.set(context)
 
     def unbind_context(self, token: Token[FunWatchContext | None]) -> None:
         """Restore the previous invocation context for the current execution flow."""
@@ -244,33 +281,45 @@ class FunWatchRegistry:
 
     def get_active_context(self) -> FunWatchContext:
         """Return current invocation context or raise if none is bound."""
-        ctx = self._active_context.get()
-        if ctx is None:
+        context = self._active_context.get()
+        if context is None:
             raise RuntimeError(
                 "FunWatchContext is not active. "
                 "Use self._fun_watch only inside methods decorated with @fun_watch, "
                 "or wrap worker callables with FunWatchRegistry.wrap_with_active_context()."
             )
-        return ctx
+        return context
 
     def wrap_with_active_context(self, func: Callable[..., T]) -> Callable[..., T]:
-        """Wrap callable so worker threads inherit active @fun_watch context."""
-        parent_ctx = self.get_active_context()
+        """Wrap callable so worker threads inherit active @fun_watch context.
+
+        Propagates both the FunWatchContext (for solved/failed counters) and
+        structlog contextvars (for function_id, call_chain, thread_id in logs).
+        """
+        parent_context = self.get_active_context()
+        parent_structlog_context = structlog.contextvars.get_contextvars()
 
         @functools.wraps(func)
         def wrapped(*args: Any, **kwargs: Any) -> T:
-            token = self.bind_context(parent_ctx)
+            token = self.bind_context(parent_context)
+            structlog.contextvars.bind_contextvars(**parent_structlog_context)
+            structlog.contextvars.bind_contextvars(thread_id=threading.get_ident())
             try:
                 return func(*args, **kwargs)
             finally:
+                structlog.contextvars.unbind_contextvars(*parent_structlog_context.keys())
                 self.unbind_context(token)
 
         return wrapped
 
+    def try_get_active_context(self) -> FunWatchContext | None:
+        """Return the currently active context, or None if none is bound."""
+        return self._active_context.get()
+
     def get_parent_log_id(self) -> int | None:
         """Return the log_id of the currently active context, or None."""
-        ctx = self._active_context.get()
-        return ctx.log_id if ctx is not None else None
+        context = self._active_context.get()
+        return context.log_id if context is not None else None
 
     def ensure_context_proxy(self, instance: Any) -> None:
         """Attach the stable context proxy to instance as ``_fun_watch``."""
@@ -331,6 +380,7 @@ class FunWatchRegistry:
         *,
         function_hash: str,
         execution_order: int,
+        thread_execution_order: int,
         main_app: str,
         app_id: str,
         thread_id: int,
@@ -346,7 +396,7 @@ class FunWatchRegistry:
             record = FunctionLog(
                 function_hash=function_hash,
                 execution_order=execution_order,
-                thread_execution_order=execution_order,
+                thread_execution_order=thread_execution_order,
                 main_app=main_app,
                 app_id=app_id,
                 thread_id=thread_id,
@@ -380,6 +430,7 @@ class FunWatchRegistry:
         item_error_count: int = 0,
         item_error_types_json: str | None = None,
         item_error_samples_json: str | None = None,
+        task_size: int | None = None,
     ) -> None:
         """UPDATE an existing FunctionLog row with final metrics and error details."""
         if log_id is None:
@@ -397,6 +448,8 @@ class FunWatchRegistry:
                     record.totals = get_totals(start_time, end_time)  # type: ignore[assignment]
                     record.totalm = get_totalm(start_time, end_time)  # type: ignore[assignment]
                     record.totalh = get_totalh(start_time, end_time)  # type: ignore[assignment]
+                    if task_size is not None:
+                        record.task_size = task_size  # type: ignore[assignment]
                     if error_type is not None or item_error_count > 0:
                         error_record = FunctionLogError(
                             function_log_id=log_id,
@@ -426,8 +479,23 @@ class FunWatchRegistry:
             logger.exception("Failed to update parent log_role", log_id=log_id)
 
 
-def fun_watch(func: Any) -> Any:
+def fun_watch(
+    func: Any = None,
+    *,
+    task_size: bool = True,
+    log_lifecycle: bool = True,
+    log_level: int | None = None,
+) -> Any:
     """Decorator that monitors function execution and records metrics to DB.
+
+    Supports both bare ``@fun_watch`` and parameterized ``@fun_watch(...)`` usage.
+
+    Args:
+        task_size: Auto-detect task_size from first list-like argument (default True).
+        log_lifecycle: Emit "Function started"/"Function completed" lifecycle logs
+            (default True). FunctionLog row is always written regardless.
+        log_level: Log level for lifecycle messages. ``None`` uses the registry
+            default (from LogSettings.log_level). Explicit value overrides.
 
     The decorated method's instance (``self``) must expose:
 
@@ -440,182 +508,208 @@ def fun_watch(func: Any) -> Any:
     * ``self.logger``  -- structlog BoundLogger from ``LoggingService.configure_logger()``.
       When present, lifecycle logs flow through the application's logging pipeline
       (DB, Splunk, console). When absent, falls back to the module-level logger (stderr only).
-
-    During execution the wrapper:
-
-    1. Binds a per-invocation :class:`FunWatchContext` in context-local state.
-    2. Binds ``function_id`` into structlog contextvars for log correlation.
-    3. Attaches a stable ``self._fun_watch`` proxy that routes
-       ``mark_solved`` / ``mark_failed`` to the active context.
-    4. Emits "Function started" (DEBUG) before execution.
-    5. Emits "Function completed" (DEBUG) after successful execution with metrics.
-    6. Emits "Unhandled exception" (ERROR) on exception with traceback, then re-raises.
     """
 
-    @functools.wraps(func)
-    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        registry = FunWatchRegistry.instance()
+    def decorator(decorated_func: Any) -> Any:
+        @functools.wraps(decorated_func)
+        def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+            registry = FunWatchRegistry.instance()
 
-        app_id: str = getattr(self, "app_id", "")
-        runtime_id: str = getattr(self, "runtime", "")
-        main_app: str = getattr(self, "main_app", "") or app_id
+            app_id: str = getattr(self, "app_id", "")
+            runtime_id: str = getattr(self, "runtime", "")
+            main_app: str = getattr(self, "main_app", "") or app_id
 
-        if not app_id or not runtime_id:
-            raise TypeError(
-                f"@fun_watch requires 'app_id' and 'runtime' attributes on the instance. "
-                f"Got app_id={app_id!r}, runtime={runtime_id!r}"
-            )
+            if not app_id or not runtime_id:
+                raise TypeError(
+                    f"@fun_watch requires 'app_id' and 'runtime' attributes on the instance. "
+                    f"Got app_id={app_id!r}, runtime={runtime_id!r}"
+                )
 
-        function_name = func.__name__
-        class_name = type(self).__name__
-        chain_label = f"{class_name}.{function_name}"
-        filepath = inspect.getfile(func)
-        caller_module_name = Path(filepath).name
-        func_lineno = func.__code__.co_firstlineno
-        function_id: str = str(make_hash(app_id + function_name))
+            function_name = decorated_func.__name__
+            class_name = type(self).__name__
+            chain_label = f"{class_name}.{function_name}"
+            definition_filepath = inspect.getfile(decorated_func)
+            func_lineno = decorated_func.__code__.co_firstlineno
 
-        registry.register_function(function_id, function_name, filepath, app_id)
-
-        task_size: int | None = None
-        if args and hasattr(args[0], "__len__"):
-            task_size = len(args[0])
-
-        ctx = FunWatchContext(task_size=task_size)
-        registry.ensure_context_proxy(self)
-
-        parent_log_id = registry.get_parent_log_id()
-        log_role = "child" if parent_log_id is not None else "single"
-
-        context_token = registry.bind_context(ctx)
-
-        prev_ctx = structlog.contextvars.get_contextvars()
-        prev_function_id = prev_ctx.get("function_id")
-        prev_call_chain = prev_ctx.get("call_chain")
-        prev_thread_id = prev_ctx.get("thread_id")
-        if prev_call_chain:
-            current_call_chain = f"{prev_call_chain} -> {chain_label}"
-        else:
-            root_caller = _find_root_caller()
-            if root_caller and root_caller != function_name:
-                current_call_chain = f"{root_caller} -> {chain_label}"
+            func_defining_module = getattr(decorated_func, "__module__", None)
+            instance_class: type = type(self)  # pyright: ignore[reportUnknownVariableType]
+            instance_module_name: str = instance_class.__module__
+            if func_defining_module and func_defining_module != instance_module_name:
+                instance_module = sys.modules.get(instance_module_name)
+                instance_file = getattr(instance_module, "__file__", None) if instance_module else None
+                if isinstance(instance_file, str):
+                    filepath = instance_file
+                    func_lineno = _get_class_lineno(instance_class, func_lineno)
+                else:
+                    filepath = definition_filepath
             else:
-                current_call_chain = chain_label
-        thread_id = threading.get_ident()
-        structlog.contextvars.bind_contextvars(
-            function_id=function_id, call_chain=current_call_chain, thread_id=thread_id,
-        )
-        execution_order = registry.next_execution_order(runtime_id, thread_id)
-        start_time = datetime.now(UTC)
+                filepath = definition_filepath
 
-        ctx.log_id = registry.start_function_log(
-            function_hash=function_id,
-            execution_order=execution_order,
-            main_app=main_app,
-            app_id=app_id,
-            thread_id=thread_id,
-            task_size=ctx.task_size,
-            start_time=start_time,
-            runtime_id=runtime_id,
-            parent_log_id=parent_log_id,
-            log_role=log_role,
-        )
-        if parent_log_id is not None:
-            registry.update_parent_log_role(parent_log_id)
+            caller_module_name = Path(filepath).name
+            function_id: str = str(make_hash(app_id + function_name))
 
-        app_logger: Any = getattr(self, "logger", logger)
-        app_logger.debug(
-            "Function started",
-            function_name=function_name,
-            function_id=function_id,
-            app_id=app_id,
-            runtime=runtime_id,
-            task_size=task_size,
-            module_name=caller_module_name,
-            module_path=filepath,
-            lineno=func_lineno,
-            call_chain=current_call_chain,
-        )
+            registry.register_function(function_id, function_name, definition_filepath, app_id)
 
-        exc_occurred = False
-        caught_error_type: str | None = None
-        caught_error_message: str | None = None
-        try:
-            result = func(self, *args, **kwargs)
-        except Exception as exc:
-            exc_occurred = True
-            caught_error_type = type(exc).__name__
-            caught_error_message = str(exc)
-            _solved, _failed = ctx.snapshot()
-            app_logger.exception(
-                "Unhandled exception in @fun_watch decorated function",
-                function_name=function_name,
-                function_id=function_id,
-                app_id=app_id,
-                runtime=runtime_id,
-                error_type=caught_error_type,
-                error_message=caught_error_message,
-                solved=_solved,
-                failed=_failed,
-                is_success=False,
-                module_name=caller_module_name,
-                module_path=filepath,
-                lineno=func_lineno,
-                call_chain=current_call_chain,
+            detected_task_size: int | None = None
+            if task_size and args and hasattr(args[0], "__len__"):
+                detected_task_size = len(args[0])
+
+            invocation_context = FunWatchContext(task_size=detected_task_size)
+            registry.ensure_context_proxy(self)
+
+            parent_log_id = registry.get_parent_log_id()
+            log_role = "child" if parent_log_id is not None else "single"
+
+            context_token = registry.bind_context(invocation_context)
+
+            previous_structlog_context = structlog.contextvars.get_contextvars()
+            prev_function_id = previous_structlog_context.get("function_id")
+            prev_call_chain = previous_structlog_context.get("call_chain")
+            prev_thread_id = previous_structlog_context.get("thread_id")
+            if prev_call_chain:
+                current_call_chain = f"{prev_call_chain} -> {chain_label}"
+            else:
+                root_caller = _find_root_caller()
+                if root_caller and root_caller != function_name:
+                    current_call_chain = f"{root_caller} -> {chain_label}"
+                else:
+                    current_call_chain = chain_label
+            thread_id = threading.get_ident()
+            structlog.contextvars.bind_contextvars(
+                function_id=function_id, call_chain=current_call_chain, thread_id=thread_id,
             )
-            raise
-        finally:
+            execution_order, thread_execution_order = registry.next_execution_order(runtime_id, thread_id)
+            start_time = datetime.now(UTC)
+
+            invocation_context.log_id = registry.start_function_log(
+                function_hash=function_id,
+                execution_order=execution_order,
+                thread_execution_order=thread_execution_order,
+                main_app=main_app,
+                app_id=app_id,
+                thread_id=thread_id,
+                task_size=invocation_context.task_size,
+                start_time=start_time,
+                runtime_id=runtime_id,
+                parent_log_id=parent_log_id,
+                log_role=log_role,
+            )
+            if parent_log_id is not None:
+                registry.update_parent_log_role(parent_log_id)
+
+            effective_log_level = log_level if log_level is not None else registry.default_lifecycle_log_level
+            app_logger: Any = getattr(self, "logger", logger)
+            if log_lifecycle:
+                lifecycle_started_extras: dict[str, Any] = {}
+                if detected_task_size is not None:
+                    lifecycle_started_extras["task_size"] = detected_task_size
+                app_logger.log(
+                    effective_log_level,
+                    "Function started",
+                    function_name=function_name,
+                    function_id=function_id,
+                    app_id=app_id,
+                    runtime=runtime_id,
+                    log_id=invocation_context.log_id,
+                    execution_order=execution_order,
+                    log_role=log_role,
+                    module_name=caller_module_name,
+                    module_path=filepath,
+                    lineno=func_lineno,
+                    call_chain=current_call_chain,
+                    **lifecycle_started_extras,
+                )
+
+            exc_occurred = False
+            caught_error_type: str | None = None
+            caught_error_message: str | None = None
             try:
-                solved, failed = ctx.snapshot()
-                item_error_count, item_error_types_json, item_error_samples_json = ctx.error_snapshot()
-                end_time = datetime.now(UTC)
-                duration_s = (end_time - start_time).total_seconds()
-                registry.complete_function_log(
-                    log_id=ctx.log_id,
-                    solved=solved,
-                    failed=failed,
-                    start_time=start_time,
-                    end_time=end_time,
-                    exc_occurred=exc_occurred,
+                result = decorated_func(self, *args, **kwargs)
+            except Exception as exc:
+                exc_occurred = True
+                caught_error_type = type(exc).__name__
+                caught_error_message = str(exc)
+                _solved, _failed = invocation_context.snapshot()
+                app_logger.exception(
+                    "Unhandled exception in @fun_watch decorated function",
+                    function_name=function_name,
+                    function_id=function_id,
+                    app_id=app_id,
+                    runtime=runtime_id,
                     error_type=caught_error_type,
                     error_message=caught_error_message,
-                    item_error_count=item_error_count,
-                    item_error_types_json=item_error_types_json,
-                    item_error_samples_json=item_error_samples_json,
+                    solved=_solved,
+                    failed=_failed,
+                    is_success=False,
+                    log_id=invocation_context.log_id,
+                    module_name=caller_module_name,
+                    module_path=filepath,
+                    lineno=func_lineno,
+                    call_chain=current_call_chain,
                 )
-                registry.update_last_seen(function_id)
-                if not exc_occurred:
-                    app_logger.debug(
-                        "Function completed",
-                        function_name=function_name,
-                        function_id=function_id,
-                        app_id=app_id,
-                        runtime=runtime_id,
+                raise
+            finally:
+                try:
+                    solved, failed = invocation_context.snapshot()
+                    item_error_count, item_error_types_json, item_error_samples_json = (
+                        invocation_context.error_snapshot()
+                    )
+                    end_time = datetime.now(UTC)
+                    duration_s = (end_time - start_time).total_seconds()
+                    registry.complete_function_log(
+                        log_id=invocation_context.log_id,
                         solved=solved,
                         failed=failed,
-                        processed_count=solved + failed,
-                        is_success=failed == 0,
-                        task_size=task_size,
-                        duration_s=duration_s,
-                        module_name=caller_module_name,
-                        module_path=filepath,
-                        lineno=func_lineno,
-                        call_chain=current_call_chain,
+                        start_time=start_time,
+                        end_time=end_time,
+                        exc_occurred=exc_occurred,
+                        error_type=caught_error_type,
+                        error_message=caught_error_message,
+                        item_error_count=item_error_count,
+                        item_error_types_json=item_error_types_json,
+                        item_error_samples_json=item_error_samples_json,
+                        task_size=invocation_context.task_size,
                     )
-            finally:
-                if prev_function_id is not None:
-                    structlog.contextvars.bind_contextvars(function_id=prev_function_id)
-                else:
-                    structlog.contextvars.unbind_contextvars("function_id")
-                if prev_call_chain is not None:
-                    structlog.contextvars.bind_contextvars(call_chain=prev_call_chain)
-                else:
-                    structlog.contextvars.unbind_contextvars("call_chain")
-                if prev_thread_id is not None:
-                    structlog.contextvars.bind_contextvars(thread_id=prev_thread_id)
-                else:
-                    structlog.contextvars.unbind_contextvars("thread_id")
-                registry.unbind_context(context_token)
+                    registry.update_last_seen(function_id)
+                    if not exc_occurred and log_lifecycle:
+                        app_logger.log(
+                            effective_log_level,
+                            "Function completed",
+                            function_name=function_name,
+                            function_id=function_id,
+                            app_id=app_id,
+                            runtime=runtime_id,
+                            solved=solved,
+                            failed=failed,
+                            processed_count=solved + failed,
+                            is_success=failed == 0,
+                            task_size=invocation_context.task_size,
+                            duration_s=duration_s,
+                            log_id=invocation_context.log_id,
+                            module_name=caller_module_name,
+                            module_path=filepath,
+                            lineno=func_lineno,
+                            call_chain=current_call_chain,
+                        )
+                finally:
+                    if prev_function_id is not None:
+                        structlog.contextvars.bind_contextvars(function_id=prev_function_id)
+                    else:
+                        structlog.contextvars.unbind_contextvars("function_id")
+                    if prev_call_chain is not None:
+                        structlog.contextvars.bind_contextvars(call_chain=prev_call_chain)
+                    else:
+                        structlog.contextvars.unbind_contextvars("call_chain")
+                    if prev_thread_id is not None:
+                        structlog.contextvars.bind_contextvars(thread_id=prev_thread_id)
+                    else:
+                        structlog.contextvars.unbind_contextvars("thread_id")
+                    registry.unbind_context(context_token)
 
-        return result
+            return result
 
-    return wrapper
+        return wrapper
+
+    if func is not None:
+        return decorator(func)
+    return decorator

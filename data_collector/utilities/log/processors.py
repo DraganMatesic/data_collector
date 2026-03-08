@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
@@ -103,6 +104,7 @@ def extract_caller_info() -> Processor:
         event_dict.setdefault("module_path", module_path)
         event_dict.setdefault("function_name", caller_frame.f_code.co_name)
         event_dict.setdefault("lineno", caller_frame.f_lineno)
+        event_dict.setdefault("thread_id", threading.get_ident())
 
         return event_dict
 
