@@ -659,6 +659,34 @@ class Request:
         logger.error(str(last))
         return True
 
+    # --- Error category mapping ---
+
+    _REQUEST_ERROR_TO_CATEGORY: dict[str, str] = {
+        RequestErrorType.TIMEOUT: "http",
+        RequestErrorType.PROXY: "proxy",
+        RequestErrorType.BAD_STATUS: "http",
+        RequestErrorType.REDIRECT: "http",
+        RequestErrorType.REQUEST: "http",
+        RequestErrorType.OTHER: "unknown",
+    }
+
+    def get_error_category(self) -> str | None:
+        """Map the last recorded error to an ErrorCategory value string.
+
+        Returns the ErrorCategory value for the most recent error, or
+        None if no error was recorded. Uses RequestErrorType-to-ErrorCategory
+        mapping for HTTP-level errors. Non-HTTP categories (database, I/O,
+        captcha, parse) must be passed explicitly by the scraper.
+
+        Returns:
+            ErrorCategory value string, or None if no error.
+        """
+        last = self.exception_descriptor.get_last_error()
+        if last is None:
+            return None
+        error_type = last.get("type", "")
+        return self._REQUEST_ERROR_TO_CATEGORY.get(error_type, "unknown")
+
     # --- Circuit breaker delegation ---
 
     def is_target_unhealthy(self, url: str) -> bool:

@@ -26,6 +26,7 @@ Run:
 from __future__ import annotations
 
 import os
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -237,11 +238,12 @@ def main() -> None:
                 list(range(5)),
             ]
 
-            def run_batch(batch: list[int]) -> int:
+            def run_batch(batch: list[int]) -> tuple[int, int]:
                 worker_app = BatchProcessor(
                     app_id=app_id, runtime=runtime_id, logger=logger,
                 )
-                return worker_app.process_batch(batch)
+                result = worker_app.process_batch(batch)
+                return result, threading.get_ident()
 
             with ThreadPoolExecutor(max_workers=4) as executor:
                 futures = {
@@ -250,12 +252,13 @@ def main() -> None:
                 }
                 for future in as_completed(futures):
                     worker_idx = futures[future]
-                    result = future.result()
+                    result, worker_thread_id = future.result()
                     logger.info(
                         "Worker completed",
                         worker_idx=worker_idx,
                         batch_size=len(batches[worker_idx]),
                         total_sum=result,
+                        thread_id=worker_thread_id,
                     )
 
             # --- Partial failure: some items fail in each batch ---
@@ -266,11 +269,12 @@ def main() -> None:
                 (list(range(12)), 12),  # all 12 solved, no failure
             ]
 
-            def run_batch_partial(items: list[int], cutoff: int) -> int:
+            def run_batch_partial(items: list[int], cutoff: int) -> tuple[int, int]:
                 worker_app = BatchProcessor(
                     app_id=app_id, runtime=runtime_id, logger=logger,
                 )
-                return worker_app.process_batch_partial(items, cutoff)
+                result = worker_app.process_batch_partial(items, cutoff)
+                return result, threading.get_ident()
 
             with ThreadPoolExecutor(max_workers=3) as executor:
                 futures_partial = {
@@ -281,12 +285,13 @@ def main() -> None:
                     worker_idx = futures_partial[future]
                     items, cutoff = fail_specs[worker_idx]
                     try:
-                        result = future.result()
+                        result, worker_thread_id = future.result()
                         logger.info(
                             "Worker completed",
                             worker_idx=worker_idx,
                             batch_size=len(items),
                             total_sum=result,
+                            thread_id=worker_thread_id,
                         )
                     except RuntimeError as exc:
                         logger.warning(

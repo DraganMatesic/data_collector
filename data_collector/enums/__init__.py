@@ -6,6 +6,7 @@ from data_collector.enums.hashing import UnicodeForm
 from data_collector.enums.logging import LogLevel
 from data_collector.enums.notifications import AlertSeverity
 from data_collector.enums.runtime import FatalFlag, RunStatus, RuntimeExitCode
+from data_collector.enums.scraping import ErrorCategory
 
 __all__ = [
     "CmdFlag",
@@ -17,4 +18,5 @@ __all__ = [
     "DbObjectType",
     "UnicodeForm",
     "AlertSeverity",
+    "ErrorCategory",
 ]

@@ -7,6 +7,110 @@ from data_collector.tables.deploy import Deploy
 _DEPLOY_MODULE = "data_collector.tables.deploy"
 
 
+# ---------------------------------------------------------------------------
+# create_tables / drop_tables / recreate_tables parameterised tests
+# ---------------------------------------------------------------------------
+
+
+@patch(f"{_DEPLOY_MODULE}.Database")
+@patch(f"{_DEPLOY_MODULE}.MainDatabaseSettings")
+def test_create_tables_no_args_calls_create_all_without_tables(
+    _mock_settings: MagicMock,
+    mock_db_cls: MagicMock,
+) -> None:
+    mock_engine = mock_db_cls.return_value.engine
+    deploy = Deploy()
+
+    with patch(f"{_DEPLOY_MODULE}.Base") as mock_base:
+        deploy.create_tables()
+        mock_base.metadata.create_all.assert_called_once_with(mock_engine, tables=None)
+
+
+@patch(f"{_DEPLOY_MODULE}.Database")
+@patch(f"{_DEPLOY_MODULE}.MainDatabaseSettings")
+def test_create_tables_with_tables_and_schema_calls_ensure_schema(
+    _mock_settings: MagicMock,
+    mock_db_cls: MagicMock,
+) -> None:
+    mock_db = mock_db_cls.return_value
+    mock_engine = mock_db.engine
+    deploy = Deploy()
+
+    fake_table = MagicMock()
+    with patch(f"{_DEPLOY_MODULE}.Base") as mock_base:
+        deploy.create_tables(tables=[fake_table], schema="scraping")
+        mock_db.ensure_schema.assert_called_once_with("scraping")
+        mock_base.metadata.create_all.assert_called_once_with(mock_engine, tables=[fake_table])
+
+
+@patch(f"{_DEPLOY_MODULE}.Database")
+@patch(f"{_DEPLOY_MODULE}.MainDatabaseSettings")
+def test_create_tables_with_tables_no_schema_skips_ensure_schema(
+    _mock_settings: MagicMock,
+    mock_db_cls: MagicMock,
+) -> None:
+    mock_db = mock_db_cls.return_value
+    deploy = Deploy()
+
+    fake_table = MagicMock()
+    with patch(f"{_DEPLOY_MODULE}.Base") as mock_base:
+        deploy.create_tables(tables=[fake_table])
+        mock_db.ensure_schema.assert_not_called()
+        mock_base.metadata.create_all.assert_called_once()
+
+
+@patch(f"{_DEPLOY_MODULE}.Database")
+@patch(f"{_DEPLOY_MODULE}.MainDatabaseSettings")
+def test_drop_tables_with_tables_passes_tables_arg(
+    _mock_settings: MagicMock,
+    mock_db_cls: MagicMock,
+) -> None:
+    mock_engine = mock_db_cls.return_value.engine
+    deploy = Deploy()
+
+    fake_table = MagicMock()
+    with patch(f"{_DEPLOY_MODULE}.Base") as mock_base:
+        deploy.drop_tables(tables=[fake_table])
+        mock_base.metadata.drop_all.assert_called_once_with(mock_engine, tables=[fake_table])
+
+
+@patch(f"{_DEPLOY_MODULE}.Database")
+@patch(f"{_DEPLOY_MODULE}.MainDatabaseSettings")
+def test_drop_tables_no_args_calls_drop_all_without_tables(
+    _mock_settings: MagicMock,
+    mock_db_cls: MagicMock,
+) -> None:
+    mock_engine = mock_db_cls.return_value.engine
+    deploy = Deploy()
+
+    with patch(f"{_DEPLOY_MODULE}.Base") as mock_base:
+        deploy.drop_tables()
+        mock_base.metadata.drop_all.assert_called_once_with(mock_engine, tables=None)
+
+
+@patch(f"{_DEPLOY_MODULE}.Database")
+@patch(f"{_DEPLOY_MODULE}.MainDatabaseSettings")
+def test_recreate_tables_with_tables_and_schema(
+    _mock_settings: MagicMock,
+    mock_db_cls: MagicMock,
+) -> None:
+    mock_db = mock_db_cls.return_value
+    mock_engine = mock_db.engine
+    deploy = Deploy()
+
+    fake_table = MagicMock()
+    with patch(f"{_DEPLOY_MODULE}.Base") as mock_base:
+        deploy.recreate_tables(tables=[fake_table], schema="scraping")
+        mock_base.metadata.drop_all.assert_called_once_with(mock_engine, tables=[fake_table])
+        mock_db.ensure_schema.assert_called_once_with("scraping")
+        mock_base.metadata.create_all.assert_called_once_with(mock_engine, tables=[fake_table])
+
+
+# ---------------------------------------------------------------------------
+# populate_tables tests
+# ---------------------------------------------------------------------------
+
+
 @patch(f"{_DEPLOY_MODULE}.Database")
 @patch(f"{_DEPLOY_MODULE}.MainDatabaseSettings")
 def test_populate_tables_returns_true_on_success(

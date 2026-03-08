@@ -27,7 +27,7 @@ class Runtime(Base):
     r"""
     :param runtime: it is datetime.now() 256 hashed value that represents single runtime cycle of an app.
     :param app_id: hashed value of app_group, app_parent, app_name
-    :param lsize: size of list that app is using to collect data from source. If None then it is 
+    :param task_size: size of list that app is using to collect data from source. If None then it is
         not list base search but crawling based search
     :param start_time: date and time when app started
     :param end_time: date and time when app ended
@@ -43,7 +43,7 @@ class Runtime(Base):
 
     runtime = Column(String(length=64), unique=True, index=True)
     app_id = Column(String(length=64), index=True)
-    lsize = Column(BigInteger)
+    task_size = Column(BigInteger)
     start_time = Column(DateTime)
     end_time = Column(DateTime)
     totals = Column(Integer)

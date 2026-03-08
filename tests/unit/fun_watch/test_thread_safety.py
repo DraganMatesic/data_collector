@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from unittest.mock import MagicMock, patch
 
 import pytest
+import structlog  # type: ignore[import-untyped]
 
 from data_collector.utilities.fun_watch import FunWatchMixin, FunWatchRegistry, fun_watch
 
@@ -300,6 +301,82 @@ class TestConcurrentCalls:
     @patch(f"{_REGISTRY}.start_function_log", return_value=1)
     @patch(f"{_REGISTRY}.update_last_seen")
     @patch(f"{_REGISTRY}.register_function")
+    def test_wrap_propagates_structlog_contextvars_to_worker_thread(
+        self,
+        mock_register: MagicMock,
+        mock_last_seen: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class CtxVarApp(FunWatchMixin):
+            app_id = "ctxvar_test_app"
+            runtime = "ctxvar_test_runtime"
+
+            @fun_watch
+            def parent_method(self) -> None:
+                registry = FunWatchRegistry.instance()
+
+                def worker() -> None:
+                    captured.update(structlog.contextvars.get_contextvars())
+
+                wrapped = registry.wrap_with_active_context(worker)
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    executor.submit(wrapped).result()
+
+        app = CtxVarApp()
+        app.parent_method()
+
+        assert "function_id" in captured
+        assert "call_chain" in captured
+        assert "thread_id" in captured
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_wrap_cleans_up_structlog_contextvars_after_worker(
+        self,
+        mock_register: MagicMock,
+        mock_last_seen: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        after_cleanup: dict[str, object] = {}
+
+        class CleanupApp(FunWatchMixin):
+            app_id = "cleanup_test_app"
+            runtime = "cleanup_test_runtime"
+
+            @fun_watch
+            def parent_method(self) -> None:
+                registry = FunWatchRegistry.instance()
+
+                def worker() -> None:
+                    pass
+
+                def checker() -> None:
+                    after_cleanup.update(structlog.contextvars.get_contextvars())
+
+                wrapped = registry.wrap_with_active_context(worker)
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    executor.submit(wrapped).result()
+                    executor.submit(checker).result()
+
+        app = CleanupApp()
+        app.parent_method()
+
+        assert "function_id" not in after_cleanup
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
     def test_child_thread_without_wrapper_raises_runtime_error(
         self,
         mock_register: MagicMock,
@@ -346,9 +423,55 @@ class TestExecutionOrderSequencing:
         registry = FunWatchRegistry.instance()
         tid = 1
 
-        assert registry.next_execution_order("runtime_a", tid) == 1
-        assert registry.next_execution_order("runtime_a", tid) == 2
-        assert registry.next_execution_order("runtime_a", tid) == 3
+        assert registry.next_execution_order("runtime_a", tid) == (1, 1)
+        assert registry.next_execution_order("runtime_a", tid) == (2, 2)
+        assert registry.next_execution_order("runtime_a", tid) == (3, 3)
 
-        assert registry.next_execution_order("runtime_b", tid) == 1
-        assert registry.next_execution_order("runtime_b", tid) == 2
+        assert registry.next_execution_order("runtime_b", tid) == (1, 1)
+        assert registry.next_execution_order("runtime_b", tid) == (2, 2)
+
+
+class TestWrapWithActiveContext:
+    def setup_method(self) -> None:
+        FunWatchRegistry.reset()
+
+    @patch(f"{_REGISTRY}.update_parent_log_role")
+    @patch(f"{_REGISTRY}.complete_function_log")
+    @patch(f"{_REGISTRY}.start_function_log", return_value=1)
+    @patch(f"{_REGISTRY}.update_last_seen")
+    @patch(f"{_REGISTRY}.register_function")
+    def test_wrap_overrides_thread_id_to_worker_thread(
+        self,
+        mock_register: MagicMock,
+        mock_last_seen: MagicMock,
+        mock_start_log: MagicMock,
+        mock_complete_log: MagicMock,
+        _mock_parent_role: MagicMock,
+    ) -> None:
+        captured_thread_ids: list[int] = []
+        parent_thread_id = threading.get_ident()
+
+        class CtxApp(FunWatchMixin):
+            app_id = "ctx_thread_app"
+            runtime = "ctx_thread_runtime"
+
+            @fun_watch
+            def parent_method(self) -> None:
+                registry = FunWatchRegistry.instance()
+
+                def worker() -> None:
+                    captured_thread_ids.append(
+                        structlog.contextvars.get_contextvars().get("thread_id", 0)
+                    )
+
+                wrapped = registry.wrap_with_active_context(worker)
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    executor.submit(wrapped).result()
+
+        app = CtxApp()
+        app.parent_method()
+
+        assert len(captured_thread_ids) == 1
+        worker_thread_id = captured_thread_ids[0]
+        assert worker_thread_id != 0
+        assert worker_thread_id != parent_thread_id
