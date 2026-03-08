@@ -15,6 +15,9 @@ def _make_mock_database(*, map_objects: bool = False) -> MagicMock:
     database.settings.map_objects = map_objects
     database.app_id = "a" * 64 if map_objects else None
     database.logger = MagicMock()
+    for method_name in ("_extract_and_register_models", "_register_object_models", "_track_models_from_objects"):
+        real_method = getattr(Database, method_name)
+        setattr(database, method_name, lambda *a, _m=real_method, **kw: _m(database, *a, **kw))
     return database
 
 
