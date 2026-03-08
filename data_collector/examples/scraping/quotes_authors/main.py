@@ -301,7 +301,11 @@ def main() -> None:
             scraper.store(scraper.pending_quotes)
 
         scraper.fatal_check()
-        scraper.set_next_run()
+
+        if scraper.should_abort:
+            scraper.next_run = scraper.get_retry_next_run()
+        else:
+            scraper.set_next_run()
 
         print(f"\nQuotes+Authors scraper completed: solved={scraper.solved}, failed={scraper.failed}")
         print(f"  quotes={len(scraper.pending_quotes)}, authors={len(scraper.author_details)}")
@@ -319,6 +323,7 @@ def main() -> None:
             fatal_flag=scraper.fatal_flag,
             fatal_msg=scraper.fatal_msg or None,
             fatal_time=scraper.fatal_time,
+            disable=True if scraper.should_abort and scraper.next_run is None else None,
         )
 
         scraper.metrics.log_stats(logging.getLogger(__name__))

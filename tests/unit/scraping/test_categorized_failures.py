@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 from data_collector.enums import ErrorCategory, FatalFlag
@@ -50,6 +51,20 @@ class TestCategoryThresholdDataclass:
             raised = True
         assert raised
 
+    def test_is_blocker_default_false(self) -> None:
+        threshold = CategoryThreshold(
+            category=ErrorCategory.HTTP, max_count=0, max_rate=0.20,
+            min_sample=10, max_consecutive=5,
+        )
+        assert threshold.is_blocker is False
+
+    def test_is_blocker_explicit_true(self) -> None:
+        threshold = CategoryThreshold(
+            category=ErrorCategory.DATABASE, max_count=1, max_rate=0.0,
+            min_sample=0, max_consecutive=1, is_blocker=True,
+        )
+        assert threshold.is_blocker is True
+
 
 class TestDefaultCategoryThresholds:
     """Test DEFAULT_CATEGORY_THRESHOLDS tuple."""
@@ -77,6 +92,34 @@ class TestDefaultCategoryThresholds:
         )
         assert io_threshold.max_count == 1
         assert io_threshold.max_consecutive == 1
+
+    def test_database_is_blocker(self) -> None:
+        database_threshold = next(
+            threshold for threshold in DEFAULT_CATEGORY_THRESHOLDS
+            if threshold.category == ErrorCategory.DATABASE
+        )
+        assert database_threshold.is_blocker is True
+
+    def test_io_write_is_blocker(self) -> None:
+        io_threshold = next(
+            threshold for threshold in DEFAULT_CATEGORY_THRESHOLDS
+            if threshold.category == ErrorCategory.IO_WRITE
+        )
+        assert io_threshold.is_blocker is True
+
+    def test_http_is_not_blocker(self) -> None:
+        http_threshold = next(
+            threshold for threshold in DEFAULT_CATEGORY_THRESHOLDS
+            if threshold.category == ErrorCategory.HTTP
+        )
+        assert http_threshold.is_blocker is False
+
+    def test_proxy_is_not_blocker(self) -> None:
+        proxy_threshold = next(
+            threshold for threshold in DEFAULT_CATEGORY_THRESHOLDS
+            if threshold.category == ErrorCategory.PROXY
+        )
+        assert proxy_threshold.is_blocker is False
 
 
 class TestDatabaseCategoryImmediateStop:
@@ -310,3 +353,88 @@ class TestIncrementSolvedResetsAllCategories:
         consecutive = scraper._category_consecutive  # pyright: ignore[reportPrivateUsage]
         assert consecutive.get("http", 0) == 0
         assert consecutive.get("proxy", 0) == 0
+
+
+class TestFatalIsBlocker:
+    """Test that _fatal_is_blocker and _fatal_category are set correctly."""
+
+    def test_database_sets_blocker_true(self) -> None:
+        scraper = _make_scraper(category_thresholds=DEFAULT_CATEGORY_THRESHOLDS)
+        scraper.increment_failed(error_category=ErrorCategory.DATABASE)
+        assert scraper._fatal_is_blocker is True  # pyright: ignore[reportPrivateUsage]
+        assert scraper._fatal_category == "database"  # pyright: ignore[reportPrivateUsage]
+
+    def test_io_write_sets_blocker_true(self) -> None:
+        scraper = _make_scraper(category_thresholds=DEFAULT_CATEGORY_THRESHOLDS)
+        scraper.increment_failed(error_category=ErrorCategory.IO_WRITE)
+        assert scraper._fatal_is_blocker is True  # pyright: ignore[reportPrivateUsage]
+        assert scraper._fatal_category == "io_write"  # pyright: ignore[reportPrivateUsage]
+
+    def test_http_sets_blocker_false(self) -> None:
+        thresholds = (
+            CategoryThreshold(ErrorCategory.HTTP, max_count=0, max_rate=0.0, min_sample=0, max_consecutive=3),
+        )
+        scraper = _make_scraper(category_thresholds=thresholds)
+        for _ in range(3):
+            scraper.increment_failed(error_category=ErrorCategory.HTTP)
+        assert scraper._fatal_is_blocker is False  # pyright: ignore[reportPrivateUsage]
+        assert scraper._fatal_category == "http"  # pyright: ignore[reportPrivateUsage]
+
+    def test_abort_event_set_on_category_fatal(self) -> None:
+        scraper = _make_scraper(category_thresholds=DEFAULT_CATEGORY_THRESHOLDS)
+        assert not scraper._abort_event.is_set()  # pyright: ignore[reportPrivateUsage]
+        scraper.increment_failed(error_category=ErrorCategory.DATABASE)
+        assert scraper._abort_event.is_set()  # pyright: ignore[reportPrivateUsage]
+
+    def test_initial_state(self) -> None:
+        scraper = _make_scraper(category_thresholds=DEFAULT_CATEGORY_THRESHOLDS)
+        assert scraper._fatal_is_blocker is False  # pyright: ignore[reportPrivateUsage]
+        assert scraper._fatal_category == ""  # pyright: ignore[reportPrivateUsage]
+        assert not scraper._abort_event.is_set()  # pyright: ignore[reportPrivateUsage]
+
+
+class TestGetRetryNextRun:
+    """Test get_retry_next_run() method."""
+
+    def test_returns_none_when_no_fatal(self) -> None:
+        scraper = _make_scraper(category_thresholds=DEFAULT_CATEGORY_THRESHOLDS)
+        assert scraper.get_retry_next_run() is None
+
+    def test_returns_none_for_blocker(self) -> None:
+        scraper = _make_scraper(category_thresholds=DEFAULT_CATEGORY_THRESHOLDS)
+        scraper.increment_failed(error_category=ErrorCategory.DATABASE)
+        assert scraper.get_retry_next_run() is None
+
+    def test_returns_datetime_for_non_blocker(self) -> None:
+        thresholds = (
+            CategoryThreshold(ErrorCategory.HTTP, max_count=0, max_rate=0.0, min_sample=0, max_consecutive=3),
+        )
+        scraper = _make_scraper(category_thresholds=thresholds)
+        for _ in range(3):
+            scraper.increment_failed(error_category=ErrorCategory.HTTP)
+        before = datetime.now(UTC)
+        result = scraper.get_retry_next_run()
+        assert result is not None
+        assert result > before
+        assert result < before + timedelta(minutes=31)
+
+    def test_custom_retry_interval(self) -> None:
+        thresholds = (
+            CategoryThreshold(ErrorCategory.HTTP, max_count=0, max_rate=0.0, min_sample=0, max_consecutive=3),
+        )
+        scraper = _make_scraper(category_thresholds=thresholds)
+        for _ in range(3):
+            scraper.increment_failed(error_category=ErrorCategory.HTTP)
+        before = datetime.now(UTC)
+        result = scraper.get_retry_next_run(retry_interval=timedelta(hours=1))
+        assert result is not None
+        assert result > before + timedelta(minutes=59)
+        assert result < before + timedelta(hours=1, minutes=1)
+
+    def test_flat_threshold_fatal_is_not_blocker(self) -> None:
+        scraper = _make_scraper(max_consecutive_failures=3)
+        for _ in range(3):
+            scraper.increment_failed()
+        assert scraper.should_abort is True
+        result = scraper.get_retry_next_run()
+        assert result is not None

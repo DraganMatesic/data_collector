@@ -235,3 +235,45 @@ class TestErrorRateThreshold:
         scraper.increment_solved(5)
         scraper.increment_failed(50)
         assert scraper.fatal_flag == FatalFlag.NONE
+
+
+class TestShouldAbort:
+    """Test should_abort property."""
+
+    def test_false_when_no_fatal(self) -> None:
+        scraper = _make_scraper()
+        assert scraper.should_abort is False
+
+    def test_true_after_consecutive_threshold(self) -> None:
+        scraper = _make_scraper(max_consecutive_failures=3)
+        for _ in range(3):
+            scraper.increment_failed()
+        assert scraper.should_abort is True
+
+    def test_true_after_rate_threshold(self) -> None:
+        scraper = _make_scraper(max_error_rate=0.20, min_error_sample=10, max_consecutive_failures=0)
+        scraper.increment_solved(7)
+        for _ in range(3):
+            scraper.increment_failed()
+        assert scraper.should_abort is True
+
+    def test_abort_event_set_on_consecutive_threshold(self) -> None:
+        scraper = _make_scraper(max_consecutive_failures=3)
+        assert not scraper._abort_event.is_set()  # pyright: ignore[reportPrivateUsage]
+        for _ in range(3):
+            scraper.increment_failed()
+        assert scraper._abort_event.is_set()  # pyright: ignore[reportPrivateUsage]
+
+    def test_abort_event_set_on_rate_threshold(self) -> None:
+        scraper = _make_scraper(max_error_rate=0.20, min_error_sample=10, max_consecutive_failures=0)
+        scraper.increment_solved(7)
+        for _ in range(3):
+            scraper.increment_failed()
+        assert scraper._abort_event.is_set()  # pyright: ignore[reportPrivateUsage]
+
+    def test_abort_event_not_set_below_threshold(self) -> None:
+        scraper = _make_scraper(max_consecutive_failures=5)
+        for _ in range(4):
+            scraper.increment_failed()
+        assert not scraper._abort_event.is_set()  # pyright: ignore[reportPrivateUsage]
+        assert scraper.should_abort is False

@@ -70,8 +70,12 @@ class ThreadedScraper(BaseScraper):
         """Execute worker callable for each item using a ThreadPoolExecutor.
 
         Propagates FunWatchContext to worker threads when an active context
-        exists. Checks fatal_flag after each completed future and breaks
-        early if set.
+        exists. Checks ``_abort_event`` after each completed future and
+        cancels pending futures when a fatal threshold is breached.
+
+        Workers should check ``self.should_abort`` before expensive
+        operations (HTTP requests, captcha solves) for cooperative
+        cancellation of in-flight work.
 
         Args:
             items: Work items to process in parallel.
@@ -92,7 +96,8 @@ class ThreadedScraper(BaseScraper):
                 for idx, item in enumerate(items)
             }
             for future in as_completed(futures):
-                if self.fatal_flag:
+                if self._abort_event.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
                     break
                 future.result()
                 if track_progress:

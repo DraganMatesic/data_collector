@@ -41,6 +41,8 @@ class CategoryThreshold:
         max_rate: Failure rate as fraction of processed items (0.0 = disabled).
         min_sample: Minimum items processed before rate check applies.
         max_consecutive: Consecutive failures in this category (0 = disabled).
+        is_blocker: When True, fatal stops the app permanently (no auto-retry).
+            When False, the app retries after a configurable interval.
     """
 
     category: ErrorCategory
@@ -48,11 +50,16 @@ class CategoryThreshold:
     max_rate: float
     min_sample: int
     max_consecutive: int
+    is_blocker: bool = False
 
 
 DEFAULT_CATEGORY_THRESHOLDS: tuple[CategoryThreshold, ...] = (
-    CategoryThreshold(ErrorCategory.DATABASE, max_count=1, max_rate=0.0, min_sample=0, max_consecutive=1),
-    CategoryThreshold(ErrorCategory.IO_WRITE, max_count=1, max_rate=0.0, min_sample=0, max_consecutive=1),
+    CategoryThreshold(
+        ErrorCategory.DATABASE, max_count=1, max_rate=0.0, min_sample=0, max_consecutive=1, is_blocker=True,
+    ),
+    CategoryThreshold(
+        ErrorCategory.IO_WRITE, max_count=1, max_rate=0.0, min_sample=0, max_consecutive=1, is_blocker=True,
+    ),
     CategoryThreshold(ErrorCategory.CAPTCHA, max_count=5, max_rate=0.10, min_sample=10, max_consecutive=3),
     CategoryThreshold(ErrorCategory.PROXY, max_count=0, max_rate=0.30, min_sample=10, max_consecutive=10),
     CategoryThreshold(ErrorCategory.HTTP, max_count=0, max_rate=0.20, min_sample=10, max_consecutive=5),
@@ -128,6 +135,10 @@ class BaseScraper(FunWatchMixin):
         self._category_failures: dict[str, int] = {}
         self._category_consecutive: dict[str, int] = {}
 
+        self._abort_event = threading.Event()
+        self._fatal_is_blocker: bool = False
+        self._fatal_category: str = ""
+
         # WP-05: proxy_data will be added by the Proxy Management work package
 
     def prepare_list(self) -> None:
@@ -144,6 +155,43 @@ class BaseScraper(FunWatchMixin):
 
     def set_next_run(self) -> None:
         """Calculate next execution time based on runtime conditions. Override in subclass."""
+
+    @property
+    def should_abort(self) -> bool:
+        """Check if collection should stop immediately.
+
+        Returns True when a failure threshold has been breached and
+        fatal_flag is set. Use in single-threaded collection loops::
+
+            for url in self.work_list:
+                if self.should_abort:
+                    break
+                ...
+
+        ThreadedScraper and AsyncScraper check this automatically in
+        their batch processing loops.
+        """
+        return self.fatal_flag != FatalFlag.NONE
+
+    def get_retry_next_run(self, retry_interval: timedelta = timedelta(minutes=30)) -> datetime | None:
+        """Return a retry-scheduled next_run for non-blocker fatals.
+
+        When a fatal threshold is breached:
+        - **Blocker** (DATABASE, IO_WRITE): returns None. The app should not
+          auto-retry -- it needs human intervention.
+        - **Non-blocker** (HTTP, PROXY, CAPTCHA, PARSE, UNKNOWN): returns
+          ``now + retry_interval``. The Manager will schedule a retry.
+
+        Returns None when no fatal has occurred (use normal ``set_next_run()``).
+
+        Args:
+            retry_interval: Time before next retry attempt for non-blockers.
+        """
+        if self.fatal_flag == FatalFlag.NONE:
+            return None
+        if self._fatal_is_blocker:
+            return None
+        return datetime.now(UTC) + retry_interval
 
     def increment_solved(self, count: int = 1) -> None:
         """Thread-safe increment of solved counter with FunWatchContext forwarding.
@@ -261,7 +309,7 @@ class BaseScraper(FunWatchMixin):
     def _set_category_fatal(
         self, category_key: str, reason_type: str, actual: int | float, threshold_value: int | float,
     ) -> None:
-        """Set fatal state with category-enriched message.
+        """Set fatal state with category-enriched message and abort signal.
 
         Args:
             category_key: ErrorCategory value string.
@@ -269,7 +317,10 @@ class BaseScraper(FunWatchMixin):
             actual: The actual value that exceeded the threshold.
             threshold_value: The configured threshold value.
         """
+        threshold = self._category_thresholds_map.get(category_key)
         self.fatal_flag = FatalFlag.UNEXPECTED_BEHAVIOUR
+        self._fatal_category = category_key
+        self._fatal_is_blocker = threshold.is_blocker if threshold is not None else False
         if reason_type == "rate":
             self.fatal_msg = (
                 f"Category '{category_key}' error rate {actual:.1%} exceeds "
@@ -281,6 +332,7 @@ class BaseScraper(FunWatchMixin):
                 f"threshold ({threshold_value})."
             )
         self.fatal_time = datetime.now(UTC)
+        self._abort_event.set()
         self.logger.warning(
             "Early exit: category failure threshold exceeded",
             extra={
@@ -288,6 +340,7 @@ class BaseScraper(FunWatchMixin):
                 "reason_type": reason_type,
                 "actual": actual,
                 "threshold": threshold_value,
+                "is_blocker": self._fatal_is_blocker,
             },
         )
 
@@ -309,6 +362,7 @@ class BaseScraper(FunWatchMixin):
                 f"({self.max_consecutive_failures})."
             )
             self.fatal_time = datetime.now(UTC)
+            self._abort_event.set()
             self.logger.warning(
                 "Early exit: consecutive failure threshold exceeded",
                 extra={
@@ -332,6 +386,7 @@ class BaseScraper(FunWatchMixin):
                 f"(sample={processed}, min_sample={self.min_error_sample})."
             )
             self.fatal_time = datetime.now(UTC)
+            self._abort_event.set()
             self.logger.warning(
                 "Early exit: error rate threshold exceeded",
                 extra={
@@ -486,6 +541,7 @@ def update_app_status(
     fatal_time: datetime | None = None,
     last_run: datetime | None = None,
     eta: datetime | None = None,
+    disable: bool | None = None,
 ) -> None:
     """Update Apps table columns for the given app_id.
 
@@ -507,6 +563,8 @@ def update_app_status(
         last_run: Timestamp of last run start. Auto-set to now(UTC) when
             run_status is RUNNING and last_run is not explicitly provided.
         eta: Estimated time of completion.
+        disable: Set to True to disable the app (blocker fatals). None leaves
+            the column unchanged.
     """
     field_map: dict[str, Any] = {
         "run_status": run_status,
@@ -521,6 +579,7 @@ def update_app_status(
         "fatal_time": fatal_time,
         "last_run": last_run,
         "eta": eta,
+        "disable": disable,
     }
     if run_status == RunStatus.RUNNING and last_run is None:
         field_map["last_run"] = datetime.now(UTC)
