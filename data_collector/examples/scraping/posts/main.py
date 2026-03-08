@@ -206,7 +206,11 @@ async def main() -> None:
         scraper.prepare_list()
         await scraper.collect()
         scraper.fatal_check()
-        scraper.set_next_run()
+
+        if scraper.should_abort:
+            scraper.next_run = scraper.get_retry_next_run()
+        else:
+            scraper.set_next_run()
 
         print(f"\nPosts scraper completed: solved={scraper.solved}, failed={scraper.failed}")
         print(f"  list_size={scraper.list_size}, max_concurrency={scraper.max_concurrency}")
@@ -223,6 +227,7 @@ async def main() -> None:
             fatal_flag=scraper.fatal_flag,
             fatal_msg=scraper.fatal_msg or None,
             fatal_time=scraper.fatal_time,
+            disable=True if scraper.should_abort and scraper.next_run is None else None,
         )
 
         scraper.metrics.log_stats(logging.getLogger(__name__))

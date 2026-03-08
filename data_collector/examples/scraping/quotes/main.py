@@ -215,7 +215,11 @@ def main() -> None:
         scraper.prepare_list()
         scraper.collect()
         scraper.fatal_check()
-        scraper.set_next_run()
+
+        if scraper.should_abort:
+            scraper.next_run = scraper.get_retry_next_run()
+        else:
+            scraper.set_next_run()
 
         print(f"\nQuotes scraper completed: solved={scraper.solved}, failed={scraper.failed}")
         print(f"  list_size={scraper.list_size}, max_workers={scraper.max_workers}")
@@ -232,6 +236,7 @@ def main() -> None:
             fatal_flag=scraper.fatal_flag,
             fatal_msg=scraper.fatal_msg or None,
             fatal_time=scraper.fatal_time,
+            disable=True if scraper.should_abort and scraper.next_run is None else None,
         )
 
         scraper.metrics.log_stats(logging.getLogger(__name__))

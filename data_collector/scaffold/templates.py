@@ -52,13 +52,19 @@ class {class_name}(BaseScraper):
     def collect(self) -> None:
         """Fetch data from source for each item in work_list."""
         # TODO: Implement collection logic
+        # self._start_collect_timer()
         # for item in self.work_list:
-        #     response = self.request.get(f"{{self.base_url}}/...")
-        #     if self.request.should_abort(self.logger, proxy_on=False):
+        #     if self.should_abort:
         #         break
+        #     response = self.request.get(f"{{self.base_url}}/...")
+        #     if response is None:
+        #         self.increment_failed(error_category=self.request.get_error_category())
+        #         self.update_progress()
+        #         continue
         #     data = self.parser.parse(response.json())
         #     self.store([data])
-        #     self.solved += 1
+        #     self.increment_solved()
+        #     self.update_progress()
         pass
 
     def store(self, records: list[Any]) -> None:
@@ -101,7 +107,11 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
         scraper.prepare_list()
         scraper.collect()
         scraper.fatal_check()
-        scraper.set_next_run()
+
+        if scraper.should_abort:
+            scraper.next_run = scraper.get_retry_next_run()
+        else:
+            scraper.set_next_run()
 
         scraper.update_progress(force=True)
         update_app_status(
@@ -114,6 +124,7 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
             fatal_flag=scraper.fatal_flag,
             fatal_msg=scraper.fatal_msg or None,
             fatal_time=scraper.fatal_time,
+            disable=True if scraper.should_abort and scraper.next_run is None else None,
         )
 
         scraper.metrics.log_stats(logger)
@@ -234,7 +245,11 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
         scraper.prepare_list()
         scraper.collect()
         scraper.fatal_check()
-        scraper.set_next_run()
+
+        if scraper.should_abort:
+            scraper.next_run = scraper.get_retry_next_run()
+        else:
+            scraper.set_next_run()
 
         scraper.update_progress(force=True)
         update_app_status(
@@ -247,6 +262,7 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
             fatal_flag=scraper.fatal_flag,
             fatal_msg=scraper.fatal_msg or None,
             fatal_time=scraper.fatal_time,
+            disable=True if scraper.should_abort and scraper.next_run is None else None,
         )
 
         scraper.metrics.log_stats(logger)
@@ -360,7 +376,11 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
         scraper.prepare_list()
         asyncio.run(scraper.collect())
         scraper.fatal_check()
-        scraper.set_next_run()
+
+        if scraper.should_abort:
+            scraper.next_run = scraper.get_retry_next_run()
+        else:
+            scraper.set_next_run()
 
         scraper.update_progress(force=True)
         update_app_status(
@@ -373,6 +393,7 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
             fatal_flag=scraper.fatal_flag,
             fatal_msg=scraper.fatal_msg or None,
             fatal_time=scraper.fatal_time,
+            disable=True if scraper.should_abort and scraper.next_run is None else None,
         )
 
         scraper.metrics.log_stats(logger)

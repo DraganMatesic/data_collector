@@ -151,18 +151,44 @@ class TestProcessBatch:
 
         assert sorted(order) == list(range(5))
 
-    def test_fatal_flag_stops_processing(self) -> None:
+    def test_abort_event_breaks_result_loop(self) -> None:
+        from data_collector.enums import FatalFlag
+
         scraper = _make_scraper(max_workers=1)
-        calls: list[int] = []
+        consumed: list[int] = []
 
         def worker(item: Any, index: int) -> None:
-            calls.append(item)
-            if item == 1:
-                scraper.fatal_flag = 1
+            if item == 0:
+                scraper._abort_event.set()  # pyright: ignore[reportPrivateUsage]
+                scraper.fatal_flag = FatalFlag.UNEXPECTED_BEHAVIOUR
 
-        scraper.process_batch(list(range(5)), worker)
+        scraper.process_batch(list(range(5)), worker, track_progress=False)
 
-        assert scraper.fatal_flag == 1
+        # The abort event is set and process_batch breaks the as_completed loop
+        assert scraper._abort_event.is_set()  # pyright: ignore[reportPrivateUsage]
+        assert scraper.should_abort is True
+
+    def test_abort_event_via_category_threshold(self) -> None:
+        from data_collector.enums import ErrorCategory, FatalFlag
+        from data_collector.scraping.base import CategoryThreshold
+
+        thresholds = (
+            CategoryThreshold(
+                ErrorCategory.DATABASE, max_count=1, max_rate=0.0, min_sample=0, max_consecutive=1, is_blocker=True,
+            ),
+        )
+        scraper = _make_scraper(max_workers=1, category_thresholds=thresholds)
+
+        def worker(item: Any, index: int) -> None:
+            if item == 0:
+                scraper.increment_failed(error_category=ErrorCategory.DATABASE)
+
+        scraper.process_batch(list(range(5)), worker, track_progress=False)
+
+        assert scraper.fatal_flag == FatalFlag.UNEXPECTED_BEHAVIOUR
+        assert scraper.should_abort is True
+        assert scraper._abort_event.is_set()  # pyright: ignore[reportPrivateUsage]
+        assert scraper._fatal_is_blocker is True  # pyright: ignore[reportPrivateUsage]
 
     def test_track_progress_true_calls_update(self) -> None:
         scraper = _make_scraper(max_workers=1)

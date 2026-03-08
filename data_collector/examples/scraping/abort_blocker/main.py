@@ -1,35 +1,39 @@
-"""Single-threaded scraper: books.toscrape.com catalogue.
+"""Abort signal demo: blocker DATABASE error with permanent stop.
 
 Demonstrates:
-    - BaseScraper lifecycle: prepare_list -> collect -> store -> fatal_check -> set_next_run
-    - Real HTTP requests to books.toscrape.com (practice site for web scraping)
-    - ORM table deployment, data storage via bulk_hash + merge
-    - Progress tracking (solved/failed counters)
-    - Structured logging with LoggingService
-    - update_app_status for Apps table state management
+    - ThreadedScraper with _abort_event cancelling pending futures
+    - Blocker DATABASE error (simulated) triggering immediate abort
+    - get_retry_next_run() returning None (no auto-retry for blockers)
+    - Workers cooperatively checking should_abort before work
+    - Corrected post-fatal pattern in main()
+
+Fetches valid book pages but simulates a DATABASE write failure on the
+3rd processed item. The DATABASE threshold (max_count=1, is_blocker=True)
+triggers immediately, sets _abort_event, and cancels remaining futures.
 
 Requires:
     DC_DB_MAIN_USERNAME, DC_DB_MAIN_PASSWORD, DC_DB_MAIN_DATABASENAME,
     DC_DB_MAIN_IP, DC_DB_MAIN_PORT environment variables.
 
 Run:
-    python -m data_collector.examples run scraping/books/main
+    python -m data_collector.examples run scraping/abort_blocker/main
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 
-from data_collector.enums import FatalFlag, RunStatus
+from data_collector.enums import ErrorCategory, FatalFlag, RunStatus
 from data_collector.examples.scraping import SCHEMA
 from data_collector.examples.scraping.books.parser import Parser
-from data_collector.scraping import DEFAULT_CATEGORY_THRESHOLDS, BaseScraper
+from data_collector.scraping import DEFAULT_CATEGORY_THRESHOLDS, ThreadedScraper
 from data_collector.scraping.base import update_app_status
 from data_collector.settings.main import LogSettings
 from data_collector.tables.apps import AppGroups, AppParents, Apps
@@ -40,52 +44,86 @@ from data_collector.utilities.fun_watch import FunWatchRegistry, fun_watch
 from data_collector.utilities.functions.math import get_totalh, get_totalm, get_totals
 from data_collector.utilities.functions.runtime import AppInfo, bulk_hash, get_app_info
 from data_collector.utilities.log.main import LoggingService
-from data_collector.utilities.request import RequestMetrics
+from data_collector.utilities.request import Request, RequestMetrics
 
 _REQUIRED_ENV = (
     "DC_DB_MAIN_USERNAME", "DC_DB_MAIN_PASSWORD", "DC_DB_MAIN_DATABASENAME",
     "DC_DB_MAIN_IP", "DC_DB_MAIN_PORT",
 )
 
+# Item index at which to simulate a DATABASE error
+_SIMULATE_DB_ERROR_AT = 2
 
-class Books(BaseScraper):
-    """Single-threaded scraper for books.toscrape.com catalogue pages."""
+
+class AbortBlocker(ThreadedScraper):
+    """Multi-threaded scraper demonstrating blocker abort via _abort_event.
+
+    Fetches valid book pages but simulates a DATABASE write failure after
+    processing a few items. The DATABASE threshold triggers immediately
+    (max_count=1, is_blocker=True), sets _abort_event, and process_batch()
+    cancels remaining futures with executor.shutdown(cancel_futures=True).
+    """
 
     base_url = "https://books.toscrape.com"
 
     def __init__(self, database: Database, **kwargs: Any) -> None:
         super().__init__(database, **kwargs)
         self.parser = Parser()
+        self._simulated_error = False
+        self._simulate_lock = threading.Lock()
 
     @fun_watch
     def prepare_list(self) -> None:
-        """Generate catalogue page URLs (pages 1-5)."""
+        """Generate 10 valid catalogue page URLs."""
         self.work_list = [
             f"{self.base_url}/catalogue/page-{page}.html"
-            for page in range(1, 6)
+            for page in range(1, 11)
         ]
         self.list_size = len(self.work_list)
         self.logger.info("Work list prepared", extra={"list_size": self.list_size})
+        print(f"  Prepared {self.list_size} URLs (all valid)")
 
     @fun_watch
     def collect(self) -> None:
-        """Fetch each catalogue page and parse book listings."""
+        """Distribute pages across 2 worker threads."""
         self._start_collect_timer()
-        for url in self.work_list:
-            if self.should_abort:
-                break
-            response = self.request.get(url)
-            if response is None:
-                self.increment_failed(error_category=self.request.get_error_category())
-                self.update_progress()
-                continue
+        self._fun_watch.set_task_size(self.list_size)
+        self.process_batch(self.work_list, self._scrape_page, max_workers=2)
 
-            books = self.parser.parse_catalogue(response.content)
-            if books:
-                self.store(books)
-            self.increment_solved()
-            self.update_progress()
-        self.logger.info("Collection complete", extra={"solved": self.solved, "failed": self.failed})
+    def _scrape_page(self, item: Any, instance_id: int) -> None:
+        """Fetch one page; simulate DATABASE error on the 3rd processed item."""
+        if self.should_abort:
+            return
+
+        request = self.create_worker_request()
+        response = request.get(item)
+        if response is None:
+            print(f"  FAILED [{instance_id}]: {item}")
+            self.increment_failed(error_category=request.get_error_category())
+            return
+
+        books = self.parser.parse_catalogue(response.content)
+
+        # Simulate DATABASE error after a few successful items
+        with self._simulate_lock:
+            processed = self.solved + self.failed
+            should_simulate = not self._simulated_error and processed >= _SIMULATE_DB_ERROR_AT
+            if should_simulate:
+                self._simulated_error = True
+
+        if should_simulate:
+            print(f"  SIMULATING DATABASE ERROR [{instance_id}]: {item}")
+            self.increment_failed(error_category=ErrorCategory.DATABASE)
+            return
+
+        if books:
+            self.store(books)
+        print(f"  OK [{instance_id}]: {item} ({len(books)} books)")
+        self.increment_solved()
+
+    def create_worker_request(self) -> Request:
+        """Create per-thread Request with shared metrics."""
+        return Request(timeout=30, retries=2, metrics=self.metrics)
 
     @fun_watch(log_lifecycle=False)
     def store(self, records: list[Any]) -> None:
@@ -94,7 +132,6 @@ class Books(BaseScraper):
         with self.database.create_session() as session:
             self.database.merge(records, session, logger=self.logger)
         self._fun_watch.mark_solved(len(records))
-        self.logger.debug("Records stored", extra={"record_count": len(records)})
 
     def set_next_run(self) -> None:
         """Schedule next run in 1 day."""
@@ -131,7 +168,7 @@ def _register_app(database: Database, app_info: AppInfo) -> None:
 
 
 def _update_runtime(
-    database: Database, runtime: str, start_time: datetime, scraper: Books | None,
+    database: Database, runtime: str, start_time: datetime, scraper: AbortBlocker | None,
 ) -> None:
     """Finalize the Runtime record with end time and counters."""
     end_time = datetime.now(UTC)
@@ -156,7 +193,7 @@ def _update_runtime(
 
 
 def main() -> None:
-    """End-to-end single-threaded scraper example."""
+    """Blocker abort demo: simulated DATABASE error triggers permanent stop."""
     missing = [v for v in _REQUIRED_ENV if not os.environ.get(v)]
     if missing:
         print(f"Skipping: DB env vars not set: {', '.join(missing)}")
@@ -164,7 +201,6 @@ def main() -> None:
 
     FunWatchRegistry.reset()
 
-    # Ensure app schema exists, then deploy all tables (non-destructive) + codebook seed data
     deploy = Deploy()
     deploy.database.ensure_schema(SCHEMA)
     deploy.create_tables()
@@ -197,24 +233,35 @@ def main() -> None:
         session.merge(Runtime(runtime=runtime, app_id=app_id, start_time=start_time))
         session.commit()
 
-    scraper: Books | None = None
+    print("\n--- Abort Blocker Demo: DATABASE Error ---")
+    print(f"Expected: ~{_SIMULATE_DB_ERROR_AT} OK, then simulated DATABASE error triggers blocker abort\n")
+
+    scraper: AbortBlocker | None = None
     try:
         metrics = RequestMetrics()
-        scraper = Books(
-            database, logger=logger, runtime=runtime, app_id=app_id, metrics=metrics,
+        scraper = AbortBlocker(
+            database, logger=logger, runtime=runtime, app_id=app_id, metrics=metrics, max_workers=2,
             category_thresholds=DEFAULT_CATEGORY_THRESHOLDS,
         )
         scraper.prepare_list()
         scraper.collect()
         scraper.fatal_check()
 
+        # Corrected post-fatal pattern: use get_retry_next_run() when fatal
         if scraper.should_abort:
             scraper.next_run = scraper.get_retry_next_run()
+            if scraper.next_run is not None:
+                print(f"\n  NON-BLOCKER: retry scheduled at {scraper.next_run}")
+            else:
+                print("\n  BLOCKER: no retry, manual intervention required")
         else:
             scraper.set_next_run()
+            print(f"\n  Normal completion: next_run={scraper.next_run}")
 
-        print(f"\nBooks scraper completed: solved={scraper.solved}, failed={scraper.failed}")
-        print(f"  list_size={scraper.list_size}, next_run={scraper.next_run}")
+        print(f"\n  Results: solved={scraper.solved}, failed={scraper.failed}")
+        print(f"  list_size={scraper.list_size}, max_workers={scraper.max_workers}")
+        print(f"  fatal_flag={scraper.fatal_flag}")
+        print(f"  fatal_msg={scraper.fatal_msg or 'none'}")
 
         scraper.update_progress(force=True)
         update_app_status(

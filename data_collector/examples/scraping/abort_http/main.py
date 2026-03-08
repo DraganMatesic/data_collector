@@ -1,19 +1,22 @@
-"""Single-threaded scraper: books.toscrape.com catalogue.
+"""Abort signal demo: non-blocker HTTP errors with retry scheduling.
 
 Demonstrates:
-    - BaseScraper lifecycle: prepare_list -> collect -> store -> fatal_check -> set_next_run
-    - Real HTTP requests to books.toscrape.com (practice site for web scraping)
-    - ORM table deployment, data storage via bulk_hash + merge
-    - Progress tracking (solved/failed counters)
-    - Structured logging with LoggingService
-    - update_app_status for Apps table state management
+    - should_abort breaking a single-threaded collection loop
+    - Non-blocker HTTP consecutive threshold triggering abort
+    - get_retry_next_run() returning a retry datetime (now + 30 min)
+    - Corrected post-fatal pattern in main()
+
+Mixes valid and invalid URLs to trigger HTTP consecutive failures.
+After 5 consecutive HTTP errors, should_abort becomes True and the loop
+breaks. The main() function uses get_retry_next_run() to schedule a retry
+instead of disabling the app permanently.
 
 Requires:
     DC_DB_MAIN_USERNAME, DC_DB_MAIN_PASSWORD, DC_DB_MAIN_DATABASENAME,
     DC_DB_MAIN_IP, DC_DB_MAIN_PORT environment variables.
 
 Run:
-    python -m data_collector.examples run scraping/books/main
+    python -m data_collector.examples run scraping/abort_http/main
 """
 
 from __future__ import annotations
@@ -26,11 +29,10 @@ from typing import Any
 
 from sqlalchemy import select
 
-from data_collector.enums import FatalFlag, RunStatus
+from data_collector.enums import ErrorCategory, FatalFlag, RunStatus
 from data_collector.examples.scraping import SCHEMA
 from data_collector.examples.scraping.books.parser import Parser
-from data_collector.scraping import DEFAULT_CATEGORY_THRESHOLDS, BaseScraper
-from data_collector.scraping.base import update_app_status
+from data_collector.scraping.base import BaseScraper, CategoryThreshold, update_app_status
 from data_collector.settings.main import LogSettings
 from data_collector.tables.apps import AppGroups, AppParents, Apps
 from data_collector.tables.deploy import Deploy
@@ -47,9 +49,19 @@ _REQUIRED_ENV = (
     "DC_DB_MAIN_IP", "DC_DB_MAIN_PORT",
 )
 
+# Custom threshold: 5 consecutive HTTP errors trigger non-blocker abort
+_HTTP_THRESHOLD = (
+    CategoryThreshold(ErrorCategory.HTTP, max_count=0, max_rate=0.0, min_sample=0, max_consecutive=5),
+)
 
-class Books(BaseScraper):
-    """Single-threaded scraper for books.toscrape.com catalogue pages."""
+
+class AbortHttp(BaseScraper):
+    """Single-threaded scraper demonstrating non-blocker abort and retry.
+
+    Mixes valid book catalogue pages with invalid URLs. After 5 consecutive
+    HTTP failures, should_abort triggers and the collection loop breaks.
+    get_retry_next_run() returns a retry datetime because HTTP is non-blocker.
+    """
 
     base_url = "https://books.toscrape.com"
 
@@ -59,32 +71,54 @@ class Books(BaseScraper):
 
     @fun_watch
     def prepare_list(self) -> None:
-        """Generate catalogue page URLs (pages 1-5)."""
+        """Generate mixed valid/invalid URLs to trigger consecutive HTTP failures."""
         self.work_list = [
-            f"{self.base_url}/catalogue/page-{page}.html"
-            for page in range(1, 6)
+            f"{self.base_url}/catalogue/page-1.html",
+            f"{self.base_url}/catalogue/page-2.html",
+            f"{self.base_url}/catalogue/page-3.html",
+            f"{self.base_url}/catalogue/page-9991.html",
+            f"{self.base_url}/catalogue/page-9992.html",
+            f"{self.base_url}/catalogue/page-9993.html",
+            f"{self.base_url}/catalogue/page-9994.html",
+            f"{self.base_url}/catalogue/page-9995.html",
+            f"{self.base_url}/catalogue/page-4.html",
+            f"{self.base_url}/catalogue/page-5.html",
         ]
         self.list_size = len(self.work_list)
         self.logger.info("Work list prepared", extra={"list_size": self.list_size})
+        print(f"  Prepared {self.list_size} URLs (3 valid, 5 invalid, 2 valid)")
 
     @fun_watch
     def collect(self) -> None:
-        """Fetch each catalogue page and parse book listings."""
+        """Fetch each URL, detecting non-2xx as HTTP errors."""
         self._start_collect_timer()
         for url in self.work_list:
             if self.should_abort:
+                print("\n  ABORT: should_abort=True, stopping collection loop")
+                print(f"  Reason: {self.fatal_msg}")
+                print(f"  Category: {self._fatal_category}, is_blocker={self._fatal_is_blocker}")
                 break
+
             response = self.request.get(url)
             if response is None:
+                print(f"  FAILED (connection): {url}")
                 self.increment_failed(error_category=self.request.get_error_category())
+                self.update_progress()
+                continue
+
+            if response.status_code < 200 or response.status_code >= 300:
+                print(f"  FAILED (HTTP {response.status_code}): {url}")
+                self.increment_failed(error_category=ErrorCategory.HTTP)
                 self.update_progress()
                 continue
 
             books = self.parser.parse_catalogue(response.content)
             if books:
                 self.store(books)
+            print(f"  OK: {url} ({len(books)} books)")
             self.increment_solved()
             self.update_progress()
+
         self.logger.info("Collection complete", extra={"solved": self.solved, "failed": self.failed})
 
     @fun_watch(log_lifecycle=False)
@@ -94,7 +128,6 @@ class Books(BaseScraper):
         with self.database.create_session() as session:
             self.database.merge(records, session, logger=self.logger)
         self._fun_watch.mark_solved(len(records))
-        self.logger.debug("Records stored", extra={"record_count": len(records)})
 
     def set_next_run(self) -> None:
         """Schedule next run in 1 day."""
@@ -131,7 +164,7 @@ def _register_app(database: Database, app_info: AppInfo) -> None:
 
 
 def _update_runtime(
-    database: Database, runtime: str, start_time: datetime, scraper: Books | None,
+    database: Database, runtime: str, start_time: datetime, scraper: AbortHttp | None,
 ) -> None:
     """Finalize the Runtime record with end time and counters."""
     end_time = datetime.now(UTC)
@@ -156,7 +189,7 @@ def _update_runtime(
 
 
 def main() -> None:
-    """End-to-end single-threaded scraper example."""
+    """Non-blocker abort demo: HTTP consecutive errors trigger retry scheduling."""
     missing = [v for v in _REQUIRED_ENV if not os.environ.get(v)]
     if missing:
         print(f"Skipping: DB env vars not set: {', '.join(missing)}")
@@ -164,7 +197,6 @@ def main() -> None:
 
     FunWatchRegistry.reset()
 
-    # Ensure app schema exists, then deploy all tables (non-destructive) + codebook seed data
     deploy = Deploy()
     deploy.database.ensure_schema(SCHEMA)
     deploy.create_tables()
@@ -197,24 +229,34 @@ def main() -> None:
         session.merge(Runtime(runtime=runtime, app_id=app_id, start_time=start_time))
         session.commit()
 
-    scraper: Books | None = None
+    print("\n--- Abort HTTP Demo: Non-Blocker ---")
+    print("Expected: 3 OK, then 5 consecutive HTTP failures trigger abort, 2 URLs never reached\n")
+
+    scraper: AbortHttp | None = None
     try:
         metrics = RequestMetrics()
-        scraper = Books(
+        scraper = AbortHttp(
             database, logger=logger, runtime=runtime, app_id=app_id, metrics=metrics,
-            category_thresholds=DEFAULT_CATEGORY_THRESHOLDS,
+            category_thresholds=_HTTP_THRESHOLD,
         )
         scraper.prepare_list()
         scraper.collect()
         scraper.fatal_check()
 
+        # Corrected post-fatal pattern: use get_retry_next_run() when fatal
         if scraper.should_abort:
             scraper.next_run = scraper.get_retry_next_run()
+            if scraper.next_run is not None:
+                print(f"\n  NON-BLOCKER: retry scheduled at {scraper.next_run}")
+            else:
+                print("\n  BLOCKER: no retry, manual intervention required")
         else:
             scraper.set_next_run()
+            print(f"\n  Normal completion: next_run={scraper.next_run}")
 
-        print(f"\nBooks scraper completed: solved={scraper.solved}, failed={scraper.failed}")
-        print(f"  list_size={scraper.list_size}, next_run={scraper.next_run}")
+        print(f"\n  Results: solved={scraper.solved}, failed={scraper.failed}")
+        print(f"  list_size={scraper.list_size}, fatal_flag={scraper.fatal_flag}")
+        print(f"  fatal_msg={scraper.fatal_msg or 'none'}")
 
         scraper.update_progress(force=True)
         update_app_status(
