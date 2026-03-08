@@ -379,10 +379,7 @@ class Database:
                 "Pass the original ORM objects, or call hash_list(..., inplace=True)."
             )
 
-        # Registering models
-        if self.settings.map_objects and self.app_id:
-            models_used = self._track_models_from_objects(obj_list)
-            self.register_models(models_used)
+        self._register_object_models(obj_list)
 
         # Infer db_table from first ORM object if not explicitly provided
         db_table: type[Any] = obj_list[0].__class__
@@ -431,9 +428,7 @@ class Database:
         for obj in object_list:
             session.delete(obj)
 
-        if self.settings.map_objects and self.app_id:
-            models_used = self._track_models_from_objects(object_list)
-            self.register_models(models_used)
+        self._register_object_models(object_list)
 
     def archive(
         self,
@@ -452,18 +447,13 @@ class Database:
             setattr(obj, archive_col, archive_time)
             session.add(obj)
 
-        if self.settings.map_objects and self.app_id:
-            models_used = self._track_models_from_objects(object_list)
-            self.register_models(models_used)
+        self._register_object_models(object_list)
 
     def bulk_insert(self, object_list: list[Any], session: Session) -> None:
         """Bulk insert ORM objects using session.add_all(). Caller must commit afterward."""
         if object_list:
             session.add_all(object_list)
-
-            if self.settings.map_objects and self.app_id:
-                models_used = self._track_models_from_objects(object_list)
-                self.register_models(models_used)
+            self._register_object_models(object_list)
 
     def update_insert(
             self,
@@ -537,16 +527,7 @@ class Database:
             Result object -- use .scalars().all() for ORM objects or .scalar_one_or_none() for single row.
         """
         if map_objects and self.settings.map_objects and self.app_id:
-            try:
-                extracted_models = extract_models_from_statement(statement)
-            except Exception as extraction_error:
-                self.logger.warning("Failed to extract models from statement: %s", extraction_error)
-                extracted_models = set[type[Any]]()
-
-            if extracted_models:
-                self.register_models(extracted_models)
-            elif not isinstance(statement, TextClause):
-                self.logger.warning(_NO_MODELS_WARNING)
+            self._extract_and_register_models(statement)
 
         return session.execute(statement)
 
@@ -569,18 +550,7 @@ class Database:
             Result object -- use .rowcount for affected rows.
         """
         if self.settings.map_objects and self.app_id:
-            detected_models = models
-            if detected_models is None:
-                try:
-                    detected_models = extract_models_from_statement(statement)
-                except Exception as extraction_error:
-                    self.logger.warning("Failed to extract models from statement: %s", extraction_error)
-                    detected_models = set[type[Any]]()
-
-            if detected_models:
-                self.register_models(detected_models)
-            elif not isinstance(statement, TextClause):
-                self.logger.warning(_NO_MODELS_WARNING)
+            self._extract_and_register_models(statement, explicit_models=models)
 
         return session.execute(statement)
 
@@ -603,9 +573,7 @@ class Database:
         if flush:
             session.flush()
 
-        if self.settings.map_objects and self.app_id:
-            models_used = self._track_models_from_objects([instance])
-            self.register_models(models_used)
+        self._register_object_models([instance])
 
     def execute(self, sql_text: str, session: Session) -> Result[Any]:
         """Execute a stored procedure, function, or package procedure call.
@@ -669,6 +637,36 @@ class Database:
     def _track_models_from_objects(self, objects: list[Any] | tuple[Any, ...]) -> set[type[Any]]:
         """Collect distinct ORM model classes from the given object list."""
         return {obj.__class__ for obj in objects if hasattr(obj, "__class__")}
+
+    def _register_object_models(self, objects: list[Any] | tuple[Any, ...]) -> None:
+        """Track and register ORM model classes from object instances for dependency mapping."""
+        if self.settings.map_objects and self.app_id:
+            models_used = self._track_models_from_objects(objects)
+            self.register_models(models_used)
+
+    def _extract_and_register_models(
+            self,
+            statement: Executable,
+            explicit_models: set[type[Any]] | None = None,
+    ) -> None:
+        """Extract ORM models from a statement and register them for dependency tracking.
+
+        Args:
+            statement: A SQLAlchemy 2.x executable statement.
+            explicit_models: If provided, skips extraction and registers these models directly.
+        """
+        detected_models = explicit_models
+        if detected_models is None:
+            try:
+                detected_models = extract_models_from_statement(statement)
+            except Exception as extraction_error:
+                self.logger.warning("Failed to extract models from statement: %s", extraction_error)
+                detected_models = set[type[Any]]()
+
+        if detected_models:
+            self.register_models(detected_models)
+        elif not isinstance(statement, TextClause):
+            self.logger.warning(_NO_MODELS_WARNING)
 
     def get_model_source_type(self, model: Any) -> str:
         """Identify whether a model is mapped to a table, view, function, or procedure."""
