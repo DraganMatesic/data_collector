@@ -14,6 +14,7 @@ from data_collector.tables.apps import (
 )
 from data_collector.tables.log import CodebookLogLevel, FunctionLog, FunctionLogError, Logs
 from data_collector.tables.notifications import CodebookAlertSeverity
+from data_collector.tables.proxy import ProxyBlacklist, ProxyReservation
 from data_collector.tables.runtime import CodebookRuntimeCodes, Runtime
 from data_collector.tables.shared import Base
 
@@ -37,6 +38,8 @@ __all__ = [
     "FunctionLog",
     "FunctionLogError",
     "Logs",
+    "ProxyBlacklist",
+    "ProxyReservation",
     "RunStatus",
     "Runtime",
 ]

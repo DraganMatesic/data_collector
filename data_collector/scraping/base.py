@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy import select
 
 from data_collector.enums import ErrorCategory, FatalFlag, RunStatus
+from data_collector.proxy.models import ProxyData
 from data_collector.tables.apps import Apps
 from data_collector.utilities.database.main import Database
 from data_collector.utilities.fun_watch import FunWatchMixin, FunWatchRegistry, fun_watch
@@ -139,7 +140,7 @@ class BaseScraper(FunWatchMixin):
         self._fatal_is_blocker: bool = False
         self._fatal_category: str = ""
 
-        # WP-05: proxy_data will be added by the Proxy Management work package
+        self.proxy_data: ProxyData | None = None
 
     def prepare_list(self) -> None:
         """Query database for items to process. Override in subclass."""
