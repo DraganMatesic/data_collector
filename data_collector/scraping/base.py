@@ -590,7 +590,7 @@ def update_app_status(
 
     with database.create_session() as session:
         stmt = select(Apps).where(Apps.app == app_id)
-        row = session.execute(stmt).scalar_one_or_none()
+        row = database.query(stmt, session).scalar_one_or_none()
         if row is None:
             return
         for attr, value in updates.items():
