@@ -46,6 +46,9 @@ class DatabaseHandler(logging.Handler):
             runtime=fixed_context.get("runtime"),
         )
 
+        # DatabaseHandler intentionally uses a raw session (not Database.add) because it holds
+        # an engine, not a Database instance. The Logs table is infrastructure -- tracking it in
+        # AppDbObjects would pollute every app's dependency graph with a universal dependency.
         with Session(self.engine) as session:
             session.add(entry)
             session.commit()

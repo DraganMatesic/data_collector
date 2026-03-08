@@ -3,7 +3,9 @@
 from typing import Any
 
 import pytest
-from sqlalchemy.orm import Query, Session
+from sqlalchemy import select
+from sqlalchemy.engine import Result
+from sqlalchemy.orm import Session
 
 from data_collector.tables.examples import ExampleTable
 from data_collector.utilities.database.main import Database
@@ -19,9 +21,10 @@ def make_row(person_id: int, company_id: int = 1) -> ExampleTable:
 
 @pytest.mark.integration
 class TestQuery:
-    def test_returns_query_object(self, db: Database, session: Session) -> None:
-        q = db.query(session, ExampleTable)
-        assert isinstance(q, Query)
+    def test_returns_result_object(self, db: Database, session: Session) -> None:
+        stmt = select(ExampleTable)
+        result = db.query(stmt, session)
+        assert isinstance(result, Result)
 
     @pytest.mark.usefixtures("clean_example_table")
     def test_returns_inserted_rows(self, db: Database, session: Session) -> None:
@@ -29,7 +32,8 @@ class TestQuery:
         db.bulk_insert(rows, session=session)
         session.commit()
 
-        result = db.query(session, ExampleTable).all()
+        stmt = select(ExampleTable)
+        result = db.query(stmt, session).scalars().all()
         assert len(result) == 3
 
     @pytest.mark.usefixtures("clean_example_table")
@@ -38,6 +42,7 @@ class TestQuery:
         db.bulk_insert(rows, session=session)
         session.commit()
 
-        result = db.query(session, ExampleTable).filter(ExampleTable.company_id == 1).all()
+        stmt = select(ExampleTable).where(ExampleTable.company_id == 1)
+        result = db.query(stmt, session).scalars().all()
         assert len(result) == 2
         assert all(r.company_id == 1 for r in result)
