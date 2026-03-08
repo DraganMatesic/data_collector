@@ -21,7 +21,7 @@ class TestUpdateAppStatus:
         mock_db.create_session.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_row = MagicMock()
-        mock_session.execute.return_value.scalar_one_or_none.return_value = mock_row
+        mock_db.query.return_value.scalar_one_or_none.return_value = mock_row
 
         update_app_status(mock_db, "test_app_id", run_status=RunStatus.RUNNING)
 
@@ -35,7 +35,7 @@ class TestUpdateAppStatus:
         mock_db.create_session.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_row = MagicMock()
-        mock_session.execute.return_value.scalar_one_or_none.return_value = mock_row
+        mock_db.query.return_value.scalar_one_or_none.return_value = mock_row
 
         now = datetime.now(UTC)
         update_app_status(
@@ -55,7 +55,7 @@ class TestUpdateAppStatus:
         mock_db.create_session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_db.create_session.return_value.__exit__ = MagicMock(return_value=False)
 
-        mock_session.execute.return_value.scalar_one_or_none.return_value = None
+        mock_db.query.return_value.scalar_one_or_none.return_value = None
 
         update_app_status(mock_db, "nonexistent_app", run_status=RunStatus.RUNNING)
 
@@ -75,7 +75,7 @@ class TestUpdateAppStatus:
         mock_row = MagicMock()
         mock_row.run_status = RunStatus.NOT_RUNNING
         mock_row.solved = 0
-        mock_session.execute.return_value.scalar_one_or_none.return_value = mock_row
+        mock_db.query.return_value.scalar_one_or_none.return_value = mock_row
 
         update_app_status(mock_db, "test_app_id", run_status=RunStatus.RUNNING)
 
@@ -92,7 +92,7 @@ class TestUpdateAppStatus:
         mock_row = MagicMock()
         mock_row.eta = datetime.now(UTC)
         mock_row.progress = 75
-        mock_session.execute.return_value.scalar_one_or_none.return_value = mock_row
+        mock_db.query.return_value.scalar_one_or_none.return_value = mock_row
 
         update_app_status(mock_db, "test_app_id", run_status=RunStatus.RUNNING)
 

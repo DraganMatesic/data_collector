@@ -368,7 +368,7 @@ class FunWatchRegistry:
         try:
             with db.create_session() as session:
                 stmt = select(AppFunctions).where(AppFunctions.function_hash == function_hash)
-                record = session.execute(stmt).scalar_one_or_none()
+                record = db.query(stmt, session).scalar_one_or_none()
                 if record is not None:
                     record.last_seen = datetime.now(UTC)  # type: ignore[assignment]
                     session.commit()
@@ -407,8 +407,7 @@ class FunWatchRegistry:
                 log_role=log_role,
             )
             with db.create_session() as session:
-                session.add(record)
-                session.flush()
+                db.add(record, session, flush=True)
                 log_id: int = record.id  # type: ignore[assignment]
                 session.commit()
             return log_id
@@ -459,7 +458,7 @@ class FunWatchRegistry:
                             item_error_types_json=item_error_types_json,
                             item_error_samples_json=item_error_samples_json,
                         )
-                        session.add(error_record)
+                        db.add(error_record, session)
                     session.commit()
         except Exception:
             logger.exception("Failed to complete FunctionLog", log_id=log_id)

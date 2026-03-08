@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import Column, String, and_, create_engine, select, text
+from sqlalchemy import Column, Select, String, and_, create_engine, select, text
 from sqlalchemy.engine import Engine, Result
 from sqlalchemy.inspection import inspect
-from sqlalchemy.orm import Query, Session, declared_attr, sessionmaker
-from sqlalchemy.orm.util import AliasedClass
-from sqlalchemy.sql.visitors import traverse
+from sqlalchemy.orm import Session, declared_attr, sessionmaker
+from sqlalchemy.sql.expression import Executable
+from sqlalchemy.sql.visitors import ExternallyTraversible, traverse
 
 from data_collector.settings.main import (
     AuthMethods,
@@ -41,21 +41,39 @@ __all__ = [
 ]
 
 
-def extract_models_from_query(query: Query[Any]) -> set[type[Any]]:
+def extract_models_from_statement(statement: Executable) -> set[type[Any]]:
+    """Extract ORM model classes from a SQLAlchemy 2.x statement.
+
+    Traverses the SQL tree of a Select, Update, or Delete statement to find
+    ORM-mapped tables and returns the corresponding model classes.
+
+    Args:
+        statement: A SQLAlchemy 2.x executable (select, update, delete).
+
+    Returns:
+        Set of ORM model classes referenced in the statement.
+    """
     models: set[type[Any]] = set()
 
-    # Step 1: Extract explicitly queried models via public API
+    # Step 1: Extract entity from column_descriptions (Select) or entity_description (Update/Delete)
     try:
-        for desc in query.column_descriptions:
-            entity = desc.get("entity")
-            if entity is None:
-                continue
-            if isinstance(entity, AliasedClass):
-                models.add(entity._sa_class_manager.class_)
-            elif isinstance(entity, type) and hasattr(entity, "__table__"):
+        descriptions: list[dict[str, Any]] = getattr(statement, "column_descriptions", [])
+        for description in descriptions:
+            entity = description.get("entity")
+            if entity is not None and isinstance(entity, type) and hasattr(entity, "__table__"):
                 models.add(entity)
-    except Exception as e:
-        logger.warning("extract_models: column_descriptions parsing failed: %s", e)
+    except Exception as extraction_error:
+        logger.warning("extract_models: column_descriptions parsing failed: %s", extraction_error)
+
+    # Step 1b: entity_description is a single dict on Update/Delete ORM statements
+    try:
+        entity_description: dict[str, Any] | None = getattr(statement, "entity_description", None)
+        if entity_description is not None:
+            entity = entity_description.get("entity")
+            if entity is not None and isinstance(entity, type) and hasattr(entity, "__table__"):
+                models.add(entity)
+    except Exception as entity_error:
+        logger.warning("extract_models: entity_description parsing failed: %s", entity_error)
 
     # Step 2: Traverse SQL tree and find FromClause with mappers
     def visit(element: Any) -> None:
@@ -66,11 +84,10 @@ def extract_models_from_query(query: Query[Any]) -> set[type[Any]]:
         except Exception:
             pass
 
-    # Traverse from the actual .statement (Select object)
     try:
-        traverse(query.statement, {}, {"clause": visit})
-    except Exception as e:
-        logger.warning("extract_models: statement traversal failed: %s", e)
+        traverse(cast("ExternallyTraversible", statement), {}, {"clause": visit})
+    except Exception as traversal_error:
+        logger.warning("extract_models: statement traversal failed: %s", traversal_error)
 
     return models
 
@@ -347,11 +364,10 @@ class Database:
         db_table: type[Any] = obj_list[0].__class__
 
         # Fetch existing records from the database
-        stmt: Any = select(db_table)
+        statement: Any = select(db_table)
         if filters is not None:
-            stmt = stmt.filter(filters)
-        result = session.execute(stmt)
-        db_data = result.scalars().all()
+            statement = statement.filter(filters)
+        db_data = self.query(statement, session, map_objects=False).scalars().all()
 
         # Compute differences by compare_key (default 'sha')
         to_insert, to_remove = runtime.obj_diff(
@@ -459,15 +475,14 @@ class Database:
 
         stats = Stats(number_of_records=len(obj_list))
         db_table: type[Any] = obj_list[0].__class__
-        tracked_models: set[type[Any]] = set()
 
         for obj in obj_list:
             filters = and_(*[(getattr(db_table, col) == getattr(obj, col)) for col in filter_cols])
-            existing_records = self.query(session, db_table, map_objects=True, track_models=tracked_models).filter(
-                filters).all()
+            statement = select(db_table).where(filters)
+            existing_records = self.query(statement, session).scalars().all()
 
             if not existing_records:
-                session.add(obj)
+                self.add(obj, session)
                 stats.inserted += 1
             else:
                 for record in existing_records:
@@ -480,12 +495,8 @@ class Database:
                             setattr(record, col, value)
                             changed = True
                     if changed:
-                        session.add(record)
+                        self.add(record, session)
                         stats.updated += 1
-
-        # Register once per batch
-        if tracked_models and self.app_id:
-            self.register_models(tracked_models)
 
         if commit:
             session.commit()
@@ -494,29 +505,87 @@ class Database:
 
     def query(
             self,
+            statement: Select[Any],
             session: Session,
-            *models: type[Any],
+            *,
             map_objects: bool = True,
-            track_models: set[type[Any]] | None = None
-    ) -> Query[Any]:
-        query_obj: Query[Any] = session.query(*models)
+    ) -> Result[Any]:
+        """Execute a SQLAlchemy 2.x select() statement with optional dependency tracking.
 
-        if map_objects and self.settings.map_objects:
-            extracted_models: set[type[Any]]
+        Args:
+            statement: A SQLAlchemy 2.x select() statement.
+            session: Active SQLAlchemy session.
+            map_objects: Override settings.map_objects for this query (default: True).
+
+        Returns:
+            Result object -- use .scalars().all() for ORM objects or .scalar_one_or_none() for single row.
+        """
+        if map_objects and self.settings.map_objects and self.app_id:
             try:
-                extracted_models = extract_models_from_query(query_obj)
-            except Exception as e:
-                self.logger.warning("Failed to extract models: %s", e)
-                extracted_models = set()
+                extracted_models = extract_models_from_statement(statement)
+            except Exception as extraction_error:
+                self.logger.warning("Failed to extract models from statement: %s", extraction_error)
+                extracted_models = set[type[Any]]()
 
-            all_models: set[type[Any]] = set(models) | extracted_models
+            if extracted_models:
+                self.register_models(extracted_models)
 
-            if track_models is not None:
-                track_models.update(all_models)
-            elif self.app_id:
-                self.register_models(all_models)
+        return session.execute(statement)
 
-        return query_obj
+    def run(
+            self,
+            statement: Executable,
+            session: Session,
+            *,
+            models: set[type[Any]] | None = None,
+    ) -> Result[Any]:
+        """Execute a SQLAlchemy 2.x DML statement (update, delete, insert) with dependency tracking.
+
+        Args:
+            statement: A SQLAlchemy 2.x executable (update(), delete(), insert()).
+            session: Active SQLAlchemy session.
+            models: Explicit set of ORM model classes for dependency tracking.
+                When None, models are auto-extracted from the statement.
+
+        Returns:
+            Result object -- use .rowcount for affected rows.
+        """
+        if self.settings.map_objects and self.app_id:
+            detected_models = models
+            if detected_models is None:
+                try:
+                    detected_models = extract_models_from_statement(statement)
+                except Exception as extraction_error:
+                    self.logger.warning("Failed to extract models from statement: %s", extraction_error)
+                    detected_models = set[type[Any]]()
+
+            if detected_models:
+                self.register_models(detected_models)
+
+        return session.execute(statement)
+
+    def add(
+            self,
+            instance: Any,
+            session: Session,
+            *,
+            flush: bool = False,
+    ) -> None:
+        """Add a single ORM object to the session with dependency tracking.
+
+        Args:
+            instance: An ORM object to add to the session.
+            session: Active SQLAlchemy session.
+            flush: If True, calls session.flush() after add to obtain auto-generated values.
+        """
+        session.add(instance)
+
+        if flush:
+            session.flush()
+
+        if self.settings.map_objects and self.app_id:
+            models_used = self._track_models_from_objects([instance])
+            self.register_models(models_used)
 
     def execute(self, sql_text: str, session: Session) -> Result[Any]:
         """
