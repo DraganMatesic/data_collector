@@ -2,9 +2,10 @@
 
 from unittest.mock import MagicMock
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.orm import aliased
 
-from data_collector.tables.apps import Apps
+from data_collector.tables.apps import AppDbObjects, Apps
 from data_collector.utilities.database.main import Database, extract_models_from_statement
 
 
@@ -39,6 +40,58 @@ class TestExtractModelsFromStatement:
         statement = text("SELECT 1")
         models = extract_models_from_statement(statement)
         assert models == set()
+
+    def test_extracts_from_aliased_model(self) -> None:
+        statement = select(aliased(Apps))
+        models = extract_models_from_statement(statement)
+        assert Apps in models
+
+    def test_extracts_from_select_from(self) -> None:
+        statement = select(func.count()).select_from(Apps)
+        models = extract_models_from_statement(statement)
+        assert Apps in models
+
+    def test_extracts_from_join(self) -> None:
+        statement = select(Apps, AppDbObjects).join(AppDbObjects, Apps.app == AppDbObjects.app_id)
+        models = extract_models_from_statement(statement)
+        assert Apps in models
+        assert AppDbObjects in models
+
+    def test_extracts_from_outerjoin(self) -> None:
+        statement = select(Apps, AppDbObjects).outerjoin(AppDbObjects, Apps.app == AppDbObjects.app_id)
+        models = extract_models_from_statement(statement)
+        assert Apps in models
+        assert AppDbObjects in models
+
+    def test_extracts_from_union(self) -> None:
+        statement = select(Apps.app).where(Apps.progress > 50).union(select(Apps.app).where(Apps.progress < 10))
+        models = extract_models_from_statement(statement)
+        assert Apps in models
+
+    def test_extracts_from_subquery_in_where(self) -> None:
+        subquery = select(AppDbObjects.app_id).where(AppDbObjects.object_type == "table").scalar_subquery()
+        statement = select(Apps).where(Apps.app.in_(subquery))
+        models = extract_models_from_statement(statement)
+        assert Apps in models
+        assert AppDbObjects in models
+
+    def test_extracts_from_exists_subquery(self) -> None:
+        exists_subquery = select(AppDbObjects).where(AppDbObjects.app_id == Apps.app).exists()
+        statement = select(Apps).where(exists_subquery)
+        models = extract_models_from_statement(statement)
+        assert Apps in models
+        assert AppDbObjects in models
+
+    def test_extracts_from_cross_table_where(self) -> None:
+        statement = select(Apps).where(Apps.app == AppDbObjects.app_id)
+        models = extract_models_from_statement(statement)
+        assert Apps in models
+        assert AppDbObjects in models
+
+    def test_extracts_from_column_only_select(self) -> None:
+        statement = select(Apps.app, Apps.run_status)
+        models = extract_models_from_statement(statement)
+        assert Apps in models
 
 
 class TestDatabaseQuery:
@@ -81,6 +134,17 @@ class TestDatabaseQuery:
         Database.query(database, statement, session, map_objects=False)
 
         database.register_models.assert_not_called()
+
+    def test_logs_warning_when_no_models_extracted(self) -> None:
+        database = _make_mock_database(map_objects=True)
+        session = MagicMock()
+        statement = select(func.now())
+
+        Database.query(database, statement, session)
+
+        database.logger.warning.assert_called_once()
+        warning_message = database.logger.warning.call_args[0][0]
+        assert "No ORM models detected" in warning_message
 
 
 class TestDatabaseRun:

@@ -12,8 +12,9 @@ from sqlalchemy import Column, Select, String, and_, create_engine, select, text
 from sqlalchemy.engine import Engine, Result
 from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import Session, declared_attr, sessionmaker
+from sqlalchemy.orm.util import AliasedClass
+from sqlalchemy.sql.elements import TextClause
 from sqlalchemy.sql.expression import Executable
-from sqlalchemy.sql.visitors import ExternallyTraversible, traverse
 
 from data_collector.settings.main import (
     AuthMethods,
@@ -22,11 +23,17 @@ from data_collector.settings.main import (
     DatabaseType,
     MainDatabaseSettings,
 )
+from data_collector.tables.apps import AppDbObjects
 from data_collector.utilities.database.columns import auto_increment_column as auto_increment_column
 from data_collector.utilities.database.models import BaseModel as BaseModel
 from data_collector.utilities.functions import runtime
 
 logger = logging.getLogger(__name__)
+
+_NO_MODELS_WARNING = (
+    "No ORM models detected in statement. Use models= parameter for explicit "
+    "tracking or restructure the query to use a database view/procedure."
+)
 
 __all__ = [
     "auto_increment_column",
@@ -44,30 +51,48 @@ __all__ = [
 def extract_models_from_statement(statement: Executable) -> set[type[Any]]:
     """Extract ORM model classes from a SQLAlchemy 2.x statement.
 
-    Traverses the SQL tree of a Select, Update, or Delete statement to find
-    ORM-mapped tables and returns the corresponding model classes.
+    Recursively traverses Select, Update, Delete, and CompoundSelect statements
+    to find all ORM-mapped models, including those in joins, select_from, aliased
+    models, subqueries, EXISTS clauses, unions, and cross-table WHERE references.
 
     Args:
-        statement: A SQLAlchemy 2.x executable (select, update, delete).
+        statement: A SQLAlchemy 2.x executable (select, update, delete, union, etc.).
 
     Returns:
         Set of ORM model classes referenced in the statement.
     """
     models: set[type[Any]] = set()
+    visited: set[int] = set()
+    _extract_from_construct(statement, models, visited)
+    return models
 
-    # Step 1: Extract entity from column_descriptions (Select) or entity_description (Update/Delete)
+
+def _extract_from_construct(construct: Any, models: set[type[Any]], visited: set[int]) -> None:
+    """Recursively extract ORM models from a SQLAlchemy construct."""
+    construct_id = id(construct)
+    if construct_id in visited:
+        return
+    visited.add(construct_id)
+
+    # Step 1: column_descriptions (Select statements)
     try:
-        descriptions: list[dict[str, Any]] = getattr(statement, "column_descriptions", [])
+        descriptions: list[dict[str, Any]] = getattr(construct, "column_descriptions", [])
         for description in descriptions:
             entity = description.get("entity")
-            if entity is not None and isinstance(entity, type) and hasattr(entity, "__table__"):
+            if entity is None:
+                continue
+            if isinstance(entity, type) and hasattr(entity, "__table__"):
                 models.add(entity)
+            elif isinstance(entity, AliasedClass):
+                aliased_class: type[Any] | None = getattr(inspect(entity), "class_", None)  # type: ignore[arg-type]
+                if aliased_class is not None:
+                    models.add(aliased_class)
     except Exception as extraction_error:
         logger.warning("extract_models: column_descriptions parsing failed: %s", extraction_error)
 
-    # Step 1b: entity_description is a single dict on Update/Delete ORM statements
+    # Step 2: entity_description (Update/Delete ORM statements)
     try:
-        entity_description: dict[str, Any] | None = getattr(statement, "entity_description", None)
+        entity_description: dict[str, Any] | None = getattr(construct, "entity_description", None)
         if entity_description is not None:
             entity = entity_description.get("entity")
             if entity is not None and isinstance(entity, type) and hasattr(entity, "__table__"):
@@ -75,21 +100,52 @@ def extract_models_from_statement(statement: Executable) -> set[type[Any]]:
     except Exception as entity_error:
         logger.warning("extract_models: entity_description parsing failed: %s", entity_error)
 
-    # Step 2: Traverse SQL tree and find FromClause with mappers
-    def visit(element: Any) -> None:
+    # Step 3: CompoundSelect (union, intersect, except)
+    selects: list[Any] | tuple[Any, ...] = getattr(construct, "selects", [])
+    for sub_select in selects:
+        _extract_from_construct(sub_select, models, visited)
+
+    # Step 4: get_final_froms (select_from, joins -- catches aggregates like func.count())
+    if hasattr(construct, "get_final_froms"):
         try:
-            mapper = inspect(element, raiseerr=False)
-            if mapper and hasattr(mapper, "class_"):
-                models.add(mapper.class_)
-        except Exception:
-            pass
+            for from_clause in construct.get_final_froms():
+                annotations: dict[str, Any] = getattr(from_clause, "_annotations", {})
+                parent_mapper = annotations.get("parententity")
+                if parent_mapper is not None and hasattr(parent_mapper, "class_"):
+                    models.add(parent_mapper.class_)
+        except Exception as froms_error:
+            logger.warning("extract_models: get_final_froms parsing failed: %s", froms_error)
 
+    # Step 5: WHERE criteria (subqueries, EXISTS, cross-table column references)
+    where_criteria: tuple[Any, ...] = getattr(construct, "_where_criteria", ())
+    for criterion in where_criteria:
+        _extract_from_clause_tree(criterion, models, visited)
+
+
+def _extract_from_clause_tree(clause: Any, models: set[type[Any]], visited: set[int]) -> None:
+    """Walk a clause tree (WHERE criteria) looking for ORM model references."""
+    clause_id = id(clause)
+    if clause_id in visited:
+        return
+    visited.add(clause_id)
+
+    # Check _annotations on columns (catches cross-table column references)
+    annotations: dict[str, Any] = getattr(clause, "_annotations", {})
+    parent_mapper = annotations.get("parententity")
+    if parent_mapper is not None and hasattr(parent_mapper, "class_"):
+        models.add(parent_mapper.class_)
+
+    # Check for subqueries (scalar_subquery, exists, etc.)
+    element = getattr(clause, "element", None)
+    if element is not None and hasattr(element, "column_descriptions"):
+        _extract_from_construct(element, models, visited)
+
+    # Recurse into children
     try:
-        traverse(cast("ExternallyTraversible", statement), {}, {"clause": visit})
-    except Exception as traversal_error:
-        logger.warning("extract_models: statement traversal failed: %s", traversal_error)
-
-    return models
+        for child in clause.get_children():
+            _extract_from_clause_tree(child, models, visited)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -102,9 +158,8 @@ class Stats:
 
 
 class BaseDBConnector(ABC):
-    """
-    Base Database Connector for all supported DB's
-    """
+    """Base database connector for all supported backends."""
+
     def __init__(self, settings: DatabaseSettings):
         self.auth_type: AuthMethods = settings.auth_type
         self.settings = settings
@@ -127,7 +182,7 @@ class BaseDBConnector(ABC):
         raise NotImplementedError
 
     def get_host(self) -> str:
-        # Checks if it will use ip:port or server name based on available env variables
+        """Return host string as ip:port or server name based on available settings."""
         ip = self.settings.ip
         port = self.settings.port
         servername = self.settings.server_name
@@ -161,12 +216,9 @@ class Postgres(BaseDBConnector):
             return f"postgresql+psycopg2://{self.settings.username}:{self.settings.password}@{host}/{self.database_name}"
 
 
-
 class MsSQL(BaseDBConnector):
     def build_conn_string(self) -> str:
         host = self.get_host()
-
-        # Checks if user want so use different ODBC Driver
         odbc_driver = self.settings.odbc_driver
 
         # WINDOWS AUTHENTICATION
@@ -176,7 +228,6 @@ class MsSQL(BaseDBConnector):
             return f"mssql+pyodbc://@{host}/{self.database_name}?trusted_connection=yes&driver={odbc_driver}"
         # SQL USERNAME + PASSWORD AUTHENTICATION
         else:
-            # Make connection string using username and password for pymssql
             if self.settings.database_driver == DatabaseDriver.ODBC:
                 return f"mssql+pyodbc://{self.settings.username}:{self.settings.password}@{host}/{self.database_name}?driver={odbc_driver}"
             else:
@@ -193,50 +244,30 @@ def database_classes(db_type: DatabaseType) -> type[BaseDBConnector]:
 
 class Database:
     def __init__(self, settings: DatabaseSettings, app_id: str | None = None, **kwargs: Any) -> None:
-        """
-        Initializes a database interface with SQLAlchemy engine and optional object mapping.
+        """Initialize a database interface with SQLAlchemy engine and optional object mapping.
 
         Args:
-            settings (DatabaseSettings): Configuration instance that inherits from `DatabaseSettings`,
-                containing connection parameters like host, port, authentication, and driver info.
-
-            app_id (str, optional): A hashed application identifier assigned by `manager.py` and stored
-                in the `apps` table in the database. It is required when `map_objects=True` in settings.
-
-                This ID is used to track database object dependencies dynamically. Provide it:
-                - When new database objects (tables, views, routines) may be added or removed
-                - When you want automatic registration of those dependencies for analytics or orchestration
-
-                If you're running in a static or read-only context, or object tracking isn't required,
-                omit this for better performance.
-
-            **kwargs: Additional keyword arguments passed to SQLAlchemy's `create_engine()`.
-
+            settings: Configuration instance containing connection parameters.
+            app_id: Hashed application identifier for dependency tracking. Required when
+                settings.map_objects is True. Used to register database object dependencies
+                (tables, views, routines) in AppDbObjects for analytics and orchestration.
+            **kwargs: Additional keyword arguments passed to SQLAlchemy's create_engine().
         """
         self.settings = settings
         self.settings_class = settings.__class__.__name__
-
-        # App_id of caller
         self.app_id: str | None = app_id
-
-        # Default logger
         self.logger: logging.Logger = logging.getLogger(__name__)
-
-        # Lazily initialized system DB connection for dependency registration
         self._system_db: Database | None = None
-
-        # Construct engine
         self.engine: Engine = self.engine_construct(**kwargs)
 
     def engine_construct(self, **kwargs: Any) -> Engine:
-        """
-        Constructs and returns a SQLAlchemy Engine.
+        """Construct and return a SQLAlchemy Engine.
 
         Args:
-            **kwargs: Additional keyword arguments passed to SQLAlchemy's `create_engine()`.
+            **kwargs: Additional keyword arguments passed to SQLAlchemy's create_engine().
 
         Returns:
-            Engine: A SQLAlchemy Engine instance ready for connections.
+            A SQLAlchemy Engine instance ready for connections.
         """
         database_class = database_classes(self.settings.database_type)
         db_instance = database_class(self.settings)
@@ -251,17 +282,10 @@ class Database:
         return self.create_session()
 
     def create_session(self) -> Session:
-        """
-        Initializes a new SQLAlchemy session.
-
-        Recommended usage::
-
-            with db.create_session() as session:
-                # your queries here
-                ...
+        """Create a new SQLAlchemy session.
 
         Returns:
-            Session: SQLAlchemy session object.
+            SQLAlchemy session object. Use as context manager for automatic cleanup.
         """
         return sessionmaker(self.engine)()
 
@@ -400,10 +424,7 @@ class Database:
         return None
 
     def delete(self, object_list: list[Any], session: Session) -> None:
-        """
-        Deletes a list of ORM objects from the database.
-        Caller must commit afterward.
-        """
+        """Delete a list of ORM objects from the database. Caller must commit afterward."""
         if not object_list:
             return
 
@@ -421,9 +442,7 @@ class Database:
         archive_col: str = 'archive',
         archive_date: datetime | None = None,
     ) -> None:
-        """
-        Updates archive_col on existing DB records with a timestamp.
-        """
+        """Set archive timestamp on existing DB records. Caller must commit afterward."""
         if not object_list:
             return
 
@@ -438,10 +457,7 @@ class Database:
             self.register_models(models_used)
 
     def bulk_insert(self, object_list: list[Any], session: Session) -> None:
-        """
-        Performs a bulk insert of ORM objects using add_all.
-        Caller is responsible for committing.
-        """
+        """Bulk insert ORM objects using session.add_all(). Caller must commit afterward."""
         if object_list:
             session.add_all(object_list)
 
@@ -529,6 +545,8 @@ class Database:
 
             if extracted_models:
                 self.register_models(extracted_models)
+            elif not isinstance(statement, TextClause):
+                self.logger.warning(_NO_MODELS_WARNING)
 
         return session.execute(statement)
 
@@ -561,6 +579,8 @@ class Database:
 
             if detected_models:
                 self.register_models(detected_models)
+            elif not isinstance(statement, TextClause):
+                self.logger.warning(_NO_MODELS_WARNING)
 
         return session.execute(statement)
 
@@ -588,12 +608,20 @@ class Database:
             self.register_models(models_used)
 
     def execute(self, sql_text: str, session: Session) -> Result[Any]:
-        """
-        Executes only stored procedures, functions, or package procedures.
-        Automatically registers used routine in AppDbObjects.
+        """Execute a stored procedure, function, or package procedure call.
+
+        Only routine calls are allowed (CALL, EXEC, SELECT, BEGIN). The routine is
+        validated against the database catalog and automatically registered in AppDbObjects.
+
+        Args:
+            sql_text: Raw SQL string containing a routine call.
+            session: Active SQLAlchemy session.
+
+        Returns:
+            Result object from the executed routine.
 
         Raises:
-            ValueError if SQL is not a supported routine call.
+            ValueError: If SQL is not a supported routine call or routine type is unknown.
         """
         if not self.settings.map_objects or not self.app_id:
             return session.execute(text(sql_text))
@@ -632,11 +660,6 @@ class Database:
         self.register_sql_objects([record_data])
         return session.execute(text(sql_text))
 
-
-    """
-    From here are class method that are used for mapping database objects during execution
-    """
-
     def _get_system_db(self) -> "Database":
         """Returns a cached Database instance connected to the main system database."""
         if self._system_db is None:
@@ -644,16 +667,11 @@ class Database:
         return self._system_db
 
     def _track_models_from_objects(self, objects: list[Any] | tuple[Any, ...]) -> set[type[Any]]:
-        """
-        Collects distinct ORM model classes from the given object list.
-        """
+        """Collect distinct ORM model classes from the given object list."""
         return {obj.__class__ for obj in objects if hasattr(obj, "__class__")}
 
     def get_model_source_type(self, model: Any) -> str:
-        """
-        Tries to identify whether the model is mapped to a table, view,
-        function, or procedure. Defaults to 'unknown' if not identifiable.
-        """
+        """Identify whether a model is mapped to a table, view, function, or procedure."""
         try:
             table_name = model.__table__.name
             schema = self.get_schema_for_model(model)
@@ -674,7 +692,6 @@ class Database:
             if routine_type.lower() in ("function", "procedure"):
                 return routine_type.lower()
 
-            # 4. Unknown type
             return "unknown"
 
         except Exception as e:
@@ -682,13 +699,19 @@ class Database:
             return "unknown"
 
     def get_routine_type(self, object_name: str, schema: str | None = None) -> str:
-        """
-        Returns the type of routine (procedure/function) in the connected database.
+        """Return the type of a database routine by querying system catalogs.
 
-        - For PostgreSQL: queries information_schema.routines
-        - For MSSQL: queries sys.objects
+        Queries information_schema.routines (PostgreSQL) or sys.objects (MSSQL)
+        to determine whether the named object is a function or procedure.
+        Raw SQL is used intentionally -- SQLAlchemy Inspector has no routine introspection API,
+        and system catalog views are DBMS-owned objects that should not be ORM-mapped.
 
-        Returns: 'FUNCTION', 'PROCEDURE', or 'UNKNOWN'
+        Args:
+            object_name: Name of the routine to look up.
+            schema: Schema to search in. Defaults to 'public' (PostgreSQL).
+
+        Returns:
+            'FUNCTION', 'PROCEDURE', or 'unknown'.
         """
         db_type = self.settings.database_type
 
@@ -726,9 +749,7 @@ class Database:
                 raise NotImplementedError(f"Routine type check not implemented for {db_type}")
 
     def get_schema_for_model(self, db_object: Any) -> str:
-        """
-        Returns the schema for a given model, with DBMS-specific fallbacks.
-        """
+        """Return the schema for a given model, with DBMS-specific fallbacks."""
         schema = db_object if isinstance(db_object, str) else db_object.__table__.schema
 
         if schema:
@@ -747,8 +768,6 @@ class Database:
         Args:
             schema_name: Name of the schema to create.
         """
-        from data_collector.settings.main import DatabaseType
-
         with self.engine.connect() as conn:
             if self.settings.database_type == DatabaseType.POSTGRES:
                 conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}"))
@@ -762,9 +781,10 @@ class Database:
             conn.commit()
 
     def extract_database_and_schema(self, db_object: Any) -> tuple[str | None, str]:
-        """
-        Extracts (database_name, schema_name) from a model's __table__.schema definition.
-        Handles special formats like 'OtherDB..' in MSSQL, where '..' implies default schema (dbo).
+        """Extract (database_name, schema_name) from a model's schema definition.
+
+        Handles cross-database formats like 'OtherDB..' in MSSQL, where '..' implies
+        the default schema (dbo).
         """
         schema = db_object if isinstance(db_object, str) else db_object.__table__.schema
 
@@ -787,10 +807,7 @@ class Database:
 
 
     def register_models(self, db_objects: set[type[Any]]) -> None:
-        """
-        Registers ORM objects
-        """
-        from data_collector.tables import AppDbObjects
+        """Register ORM model classes as application dependencies in AppDbObjects."""
         system_db = self._get_system_db()
         with system_db.create_session() as session:
             dependencies: list[Any] = []
@@ -801,11 +818,8 @@ class Database:
                     object_name = db_object.__table__.name
                     db_name_override, schema = self.extract_database_and_schema(db_object)
                     object_type = self.get_model_source_type(db_object)
-
-                    # Source info: comes from the engine tied to this model's session (self)
                     database_name = db_name_override or self.settings.database_name or ""
 
-                    # Prepare data for ORM object
                     record_data = self.prepare_dependency_record(
                         object_name=object_name,
                         object_type=object_type,
@@ -813,8 +827,6 @@ class Database:
                         database_name=database_name,
                     )
                     record_hash = cast(str, record_data["sha"])
-
-                    # Create AppDbObjects entry
                     if record_hash not in dependencies_hash:
                         dependency = AppDbObjects(**record_data)
                         dependencies.append(dependency)
@@ -829,10 +841,7 @@ class Database:
 
 
     def register_sql_objects(self, objects: list[dict[str, Any]]) -> None:
-        """
-        Registers non-ORM objects (from raw SQL) using same logic as register_models.
-        """
-        from data_collector.tables import AppDbObjects
+        """Register non-ORM database objects (from raw SQL) as application dependencies."""
         system_db = self._get_system_db()
 
         with system_db.create_session() as session:
@@ -880,9 +889,7 @@ class Database:
             schema: str,
             database_name: str | None
     ) -> dict[str, Any]:
-        """
-        Prepares a fully hashed and timestamped dictionary for AppDbObjects registration.
-        """
+        """Prepare a fully hashed and timestamped dictionary for AppDbObjects registration."""
         record_data: dict[str, Any] = {
             "app_id": self.app_id,
             "server_type": self.settings.database_type.value,
@@ -915,9 +922,7 @@ class SHAHashableMixin:
         ...
 
     def compute_sha(self) -> str:
-        """
-        Computes the SHA value based on defined keys and fields.
-        """
+        """Compute the SHA value based on defined keys and fields."""
         return cast(str, runtime.make_hash(self.get_fields(), on_keys=self.get_hash_keys()))
 
     def __init__(self, **kwargs: Any) -> None:
