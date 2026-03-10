@@ -284,7 +284,7 @@ class ProxyManager:
                         extra={"deleted_count": deleted, "app_id": self.app_id},
                     )
             except Exception:
-                logger.debug("Cleanup thread encountered an error", exc_info=True)
+                logger.warning("Cleanup thread encountered an error", exc_info=True)
 
     def cleanup_reservations(self) -> int:
         """Delete own released reservations past the cooldown period.
