@@ -21,41 +21,37 @@ class TestIsLockedOut:
 
     def test_not_locked_when_no_entry(self) -> None:
         database = _make_mock_database()
-        session = database.create_session.return_value.__enter__.return_value
-        session.execute.return_value.scalar_one_or_none.return_value = None
+        database.query.return_value.scalar_one_or_none.return_value = None
 
         checker = BlacklistChecker(database, "sub.example.com")
         assert checker.is_locked_out("1.2.3.4") is False
 
     def test_locked_when_banned(self) -> None:
         database = _make_mock_database()
-        session = database.create_session.return_value.__enter__.return_value
         row = MagicMock()
         row.is_banned = True
         row.lockout_until = None
-        session.execute.return_value.scalar_one_or_none.return_value = row
+        database.query.return_value.scalar_one_or_none.return_value = row
 
         checker = BlacklistChecker(database, "sub.example.com")
         assert checker.is_locked_out("1.2.3.4") is True
 
     def test_locked_when_lockout_active(self) -> None:
         database = _make_mock_database()
-        session = database.create_session.return_value.__enter__.return_value
         row = MagicMock()
         row.is_banned = False
         row.lockout_until = datetime.now(UTC) + timedelta(minutes=10)
-        session.execute.return_value.scalar_one_or_none.return_value = row
+        database.query.return_value.scalar_one_or_none.return_value = row
 
         checker = BlacklistChecker(database, "sub.example.com")
         assert checker.is_locked_out("1.2.3.4") is True
 
     def test_not_locked_when_lockout_expired(self) -> None:
         database = _make_mock_database()
-        session = database.create_session.return_value.__enter__.return_value
         row = MagicMock()
         row.is_banned = False
         row.lockout_until = datetime.now(UTC) - timedelta(minutes=1)
-        session.execute.return_value.scalar_one_or_none.return_value = row
+        database.query.return_value.scalar_one_or_none.return_value = row
 
         checker = BlacklistChecker(database, "sub.example.com")
         assert checker.is_locked_out("1.2.3.4") is False
@@ -67,13 +63,13 @@ class TestRecordFailure:
     def test_first_failure_creates_entry(self) -> None:
         database = _make_mock_database()
         session = database.create_session.return_value.__enter__.return_value
-        session.execute.return_value.scalar_one_or_none.return_value = None
+        database.query.return_value.scalar_one_or_none.return_value = None
 
         checker = BlacklistChecker(database, "sub.example.com")
         checker.record_failure("1.2.3.4")
 
-        session.add.assert_called_once()
-        added_entry = session.add.call_args[0][0]
+        database.add.assert_called_once()
+        added_entry = database.add.call_args[0][0]
         assert isinstance(added_entry, ProxyBlacklist)
         assert added_entry.ip_address == "1.2.3.4"  # type: ignore[comparison-overlap]
         assert added_entry.target_domain == "sub.example.com"  # type: ignore[comparison-overlap]
@@ -88,7 +84,7 @@ class TestRecordFailure:
         row = MagicMock()
         row.failure_count = 1
         row.lockout_level = 0
-        session.execute.return_value.scalar_one_or_none.return_value = row
+        database.query.return_value.scalar_one_or_none.return_value = row
 
         checker = BlacklistChecker(database, "sub.example.com")
         checker.record_failure("1.2.3.4")
@@ -104,7 +100,7 @@ class TestRecordFailure:
         row = MagicMock()
         row.failure_count = 5
         row.lockout_level = len(DEFAULT_LOCKOUT_DURATIONS) - 1
-        session.execute.return_value.scalar_one_or_none.return_value = row
+        database.query.return_value.scalar_one_or_none.return_value = row
 
         checker = BlacklistChecker(database, "sub.example.com")
         checker.record_failure("1.2.3.4")
@@ -120,7 +116,7 @@ class TestCleanupExpired:
     def test_returns_deleted_count(self) -> None:
         database = _make_mock_database()
         session = database.create_session.return_value.__enter__.return_value
-        session.execute.return_value.rowcount = 5
+        database.run.return_value.rowcount = 5
 
         checker = BlacklistChecker(database, "sub.example.com", retention_days=30)
         result = checker.cleanup_expired()
@@ -130,8 +126,7 @@ class TestCleanupExpired:
 
     def test_returns_zero_when_nothing_to_clean(self) -> None:
         database = _make_mock_database()
-        session = database.create_session.return_value.__enter__.return_value
-        session.execute.return_value.rowcount = 0
+        database.run.return_value.rowcount = 0
 
         checker = BlacklistChecker(database, "sub.example.com")
         result = checker.cleanup_expired()

@@ -65,7 +65,7 @@ class BlacklistChecker:
                     ProxyBlacklist.target_domain == self.target_domain,
                 )
             )
-            row = session.execute(statement).scalar_one_or_none()
+            row = self.database.query(statement, session).scalar_one_or_none()
             if row is None:
                 return False
             if row.is_banned:  # type: ignore[truthy-bool]
@@ -90,7 +90,7 @@ class BlacklistChecker:
                     ProxyBlacklist.target_domain == self.target_domain,
                 )
             )
-            row = session.execute(statement).scalar_one_or_none()
+            row = self.database.query(statement, session).scalar_one_or_none()
 
             if row is None:
                 lockout_until = now + self.lockout_durations[0] if self.lockout_durations else None
@@ -104,7 +104,7 @@ class BlacklistChecker:
                     lockout_level=0,
                     is_banned=False,
                 )
-                session.add(new_entry)
+                self.database.add(new_entry, session)
             else:
                 row.failure_count = row.failure_count + 1  # type: ignore[assignment]
                 row.last_failure_at = now  # type: ignore[assignment]
@@ -147,10 +147,10 @@ class BlacklistChecker:
                     ProxyBlacklist.last_failure_at < cutoff,
                 )
             )
-            result = session.execute(statement)
-            deleted_count: int = result.rowcount  # type: ignore[assignment]
+            result = self.database.run(statement, session)
+            deleted_count = int(result.rowcount)  # type: ignore[arg-type]
             session.commit()
             if deleted_count > 0:
                 extra: dict[str, int | str] = {"deleted_count": deleted_count, "target_domain": self.target_domain}
                 logger.info("Cleaned up expired blacklist entries", extra=extra)
-            return int(deleted_count)
+            return deleted_count
