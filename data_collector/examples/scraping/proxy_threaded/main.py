@@ -260,6 +260,7 @@ def main() -> None:
         database=database,
         target_domain="quotes.toscrape.com",
         app_id=app_id,
+        cooldown_seconds=2
     )
 
     scraper: ProxyQuotes | None = None
