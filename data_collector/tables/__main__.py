@@ -8,10 +8,12 @@ Usage:
     python -m data_collector.tables recreate       # Drop + create + seed (DESTRUCTIVE)
     python -m data_collector.tables splunk-setup   # Create Splunk index + sourcetype
     python -m data_collector.tables splunk-clean   # Empty Splunk index data
+    python -m data_collector.tables proxy-cleanup  # Delete orphaned proxy reservations
 """
 import argparse
 import sys
 
+from data_collector.proxy import cleanup_all_reservations
 from data_collector.tables.deploy import Deploy
 
 
@@ -23,12 +25,28 @@ def main() -> None:
     )
     parser.add_argument(
         "command",
-        choices=["create", "populate", "setup", "recreate", "splunk-setup", "splunk-clean"],
+        choices=[
+            "create", "populate", "setup", "recreate",
+            "splunk-setup", "splunk-clean", "proxy-cleanup",
+        ],
         help=(
             "create: create tables, populate: seed codebooks, setup: create + populate, "
             "recreate: drop + create + populate (DESTRUCTIVE), "
-            "splunk-setup: create Splunk index + sourcetype, splunk-clean: empty Splunk index data"
+            "splunk-setup: create Splunk index + sourcetype, splunk-clean: empty Splunk index data, "
+            "proxy-cleanup: delete orphaned proxy reservations"
         ),
+    )
+    parser.add_argument(
+        "--cooldown",
+        type=int,
+        default=300,
+        help="proxy-cleanup: cooldown threshold in seconds for released rows (default: 300)",
+    )
+    parser.add_argument(
+        "--ttl",
+        type=int,
+        default=1800,
+        help="proxy-cleanup: TTL threshold in seconds for crash orphan rows (default: 1800)",
     )
     args = parser.parse_args()
 
@@ -69,6 +87,13 @@ def main() -> None:
         else:
             print("Splunk clean failed. Check logs.", file=sys.stderr)
             sys.exit(1)
+    elif args.command == "proxy-cleanup":
+        deleted = cleanup_all_reservations(
+            deploy.database,
+            cooldown_seconds=args.cooldown,
+            ttl_seconds=args.ttl,
+        )
+        print(f"Proxy reservation cleanup complete: {deleted} rows deleted.")
 
 
 if __name__ == "__main__":
