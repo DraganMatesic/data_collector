@@ -168,7 +168,8 @@ class ProxyManager:
     def release(self, ip_address: str) -> None:
         """Release a proxy reservation on thread/session completion.
 
-        Marks the active reservation for this IP + app_id as released.
+        Marks the active reservation for this IP + app_id as released
+        and records the release timestamp for cooldown tracking.
 
         Args:
             ip_address: The proxy IP address to release.
@@ -184,7 +185,7 @@ class ProxyManager:
                         ProxyReservation.released == False,  # noqa: E712
                     )
                 )
-                .values(released=True)
+                .values(released=True, released_at=datetime.now(UTC))
             )
             self.database.run(statement, session)
             session.commit()
@@ -234,7 +235,7 @@ class ProxyManager:
                         ProxyReservation.reserved_at < ttl_cutoff,
                     )
                 )
-                .values(released=True)
+                .values(released=True, released_at=now)
             )
             self.database.run(expire_statement, session)
 
@@ -245,7 +246,7 @@ class ProxyManager:
                         ProxyReservation.ip_address == ip_address,
                         ProxyReservation.target_domain == self.reservation_domain,
                         ProxyReservation.released == True,  # noqa: E712
-                        ProxyReservation.reserved_at > cooldown_cutoff,
+                        ProxyReservation.released_at > cooldown_cutoff,
                     )
                 )
                 .limit(1)
@@ -302,7 +303,7 @@ class ProxyManager:
                 and_(
                     ProxyReservation.app_id == self.app_id,
                     ProxyReservation.released == True,  # noqa: E712
-                    ProxyReservation.reserved_at < cutoff,
+                    ProxyReservation.released_at < cutoff,
                 )
             )
             result = self.database.run(statement, session)
@@ -377,7 +378,7 @@ def cleanup_all_reservations(
         released_statement = delete(ProxyReservation).where(
             and_(
                 ProxyReservation.released == True,  # noqa: E712
-                ProxyReservation.reserved_at < cooldown_cutoff,
+                ProxyReservation.released_at < cooldown_cutoff,
             )
         )
         result = database.run(released_statement, session)
