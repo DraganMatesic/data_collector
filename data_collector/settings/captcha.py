@@ -10,8 +10,18 @@ class CaptchaSettings(BaseSettings):
 
     Environment variables follow the ``DC_CAPTCHA_`` prefix pattern:
 
-        DC_CAPTCHA_API_KEY, DC_CAPTCHA_TIMEOUT, DC_CAPTCHA_MAX_RETRIES,
-        DC_CAPTCHA_POLL_INTERVAL
+        DC_CAPTCHA_API_KEY          -- Provider API key (clientKey). Required.
+                                       Obtain from the AntiCaptcha dashboard
+                                       under Settings > API Key.
+        DC_CAPTCHA_TIMEOUT          -- Maximum seconds to wait for a single
+                                       captcha solution before raising
+                                       CaptchaTimeout. Default: 120.
+        DC_CAPTCHA_MAX_RETRIES      -- Number of additional attempts after a
+                                       CaptchaTimeout. Total attempts =
+                                       1 + max_retries. Default: 2.
+        DC_CAPTCHA_POLL_INTERVAL    -- Seconds to wait between consecutive
+                                       getTaskResult polling requests.
+                                       Default: 5.
 
     Unlike ProxySettings (which is parameterized per zone), captcha settings
     use a single API key shared across all apps. Each provider typically has

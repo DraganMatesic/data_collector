@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from data_collector.enums.captcha import CaptchaErrorCategory
+
 
 class CaptchaTaskType(StrEnum):
     """Provider-agnostic captcha type identifiers.
@@ -54,12 +56,20 @@ class CaptchaError(Exception):
         error_id: Numeric error identifier from the provider.
         error_code: Machine-readable error code string.
         error_description: Human-readable error description.
+        category: Provider-agnostic error classification for retry decisions.
     """
 
-    def __init__(self, error_id: int, error_code: str, error_description: str) -> None:
+    def __init__(
+        self,
+        error_id: int,
+        error_code: str,
+        error_description: str,
+        category: CaptchaErrorCategory = CaptchaErrorCategory.UNKNOWN,
+    ) -> None:
         self.error_id = error_id
         self.error_code = error_code
         self.error_description = error_description
+        self.category = category
         super().__init__(f"Captcha API error {error_id}: {error_code} - {error_description}")
 
 

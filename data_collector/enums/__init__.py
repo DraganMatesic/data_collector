@@ -1,5 +1,6 @@
 """Public enum exports used across the framework."""
 
+from data_collector.enums.captcha import CaptchaErrorCategory, CaptchaSolveStatus
 from data_collector.enums.commands import CmdFlag, CmdName
 from data_collector.enums.database import DbObjectType
 from data_collector.enums.hashing import UnicodeForm
@@ -9,6 +10,8 @@ from data_collector.enums.runtime import FatalFlag, RunStatus, RuntimeExitCode
 from data_collector.enums.scraping import ErrorCategory
 
 __all__ = [
+    "CaptchaErrorCategory",
+    "CaptchaSolveStatus",
     "CmdFlag",
     "CmdName",
     "RunStatus",
