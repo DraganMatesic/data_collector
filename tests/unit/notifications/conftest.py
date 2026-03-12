@@ -1,0 +1,48 @@
+"""Shared fixtures for notification tests."""
+
+from __future__ import annotations
+
+import pytest
+
+_NOTIFICATION_ENV_VARS = (
+    # Global
+    "DC_NOTIFICATION_NOTIFICATIONS_ENABLED",
+    "DC_NOTIFICATION_CHANNELS",
+    "DC_NOTIFICATION_ALERT_MIN_SEVERITY",
+    "DC_NOTIFICATION_DAILY_SUMMARY_ENABLED",
+    "DC_NOTIFICATION_DAILY_SUMMARY_TIME",
+    # Rate limiting
+    "DC_NOTIFICATION_RATE_LIMIT_MIN_INTERVAL",
+    "DC_NOTIFICATION_RATE_LIMIT_BURST_LIMIT",
+    # Retry
+    "DC_NOTIFICATION_RETRY_MAX_ATTEMPTS",
+    "DC_NOTIFICATION_RETRY_BASE_DELAY",
+    "DC_NOTIFICATION_RETRY_MULTIPLIER",
+    # Telegram
+    "DC_NOTIFICATION_TELEGRAM_BOT_TOKEN",
+    "DC_NOTIFICATION_TELEGRAM_CHAT_ID",
+    # Slack
+    "DC_NOTIFICATION_SLACK_WEBHOOK_URL",
+    "DC_NOTIFICATION_SLACK_CHANNEL",
+    # Email (SMTP)
+    "DC_NOTIFICATION_SMTP_HOST",
+    "DC_NOTIFICATION_SMTP_PORT",
+    "DC_NOTIFICATION_SMTP_USERNAME",
+    "DC_NOTIFICATION_SMTP_PASSWORD",
+    "DC_NOTIFICATION_SMTP_FROM",
+    "DC_NOTIFICATION_SMTP_TO",
+    "DC_NOTIFICATION_SMTP_USE_TLS",
+    # Discord
+    "DC_NOTIFICATION_DISCORD_WEBHOOK_URL",
+    # Generic Webhook
+    "DC_NOTIFICATION_WEBHOOK_URL",
+    "DC_NOTIFICATION_WEBHOOK_HEADERS",
+    "DC_NOTIFICATION_WEBHOOK_AUTH_TOKEN",
+)
+
+
+@pytest.fixture(autouse=True)
+def clean_notification_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove all DC_NOTIFICATION_* env vars so BaseSettings reads defaults."""
+    for variable in _NOTIFICATION_ENV_VARS:
+        monkeypatch.delenv(variable, raising=False)
