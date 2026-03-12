@@ -21,6 +21,8 @@ from typing import Any
 from sqlalchemy import select
 
 from data_collector.enums import ErrorCategory, FatalFlag, RunStatus
+from data_collector.enums.notifications import AlertSeverity
+from data_collector.notifications.models import Notification
 from data_collector.proxy.models import ProxyData
 from data_collector.tables.apps import Apps
 from data_collector.utilities.database.main import Database
@@ -141,6 +143,7 @@ class BaseScraper(FunWatchMixin):
         self._fatal_category: str = ""
 
         self.proxy_data: ProxyData | None = None
+        self.notification_dispatcher: Any | None = None
 
     def prepare_list(self) -> None:
         """Query database for items to process. Override in subclass."""
@@ -344,6 +347,30 @@ class BaseScraper(FunWatchMixin):
                 "is_blocker": self._fatal_is_blocker,
             },
         )
+        self._dispatch_fatal_notification()
+
+    def _dispatch_fatal_notification(self) -> None:
+        """Send a CRITICAL notification when fatal_flag is set.
+
+        Requires ``notification_dispatcher`` to be set (a
+        ``NotificationDispatcher`` instance). If not set, this is a no-op.
+        Delivery failures are logged but never propagated -- notification
+        errors must not interrupt scraper lifecycle.
+        """
+        if self.notification_dispatcher is None:
+            return
+
+        try:
+            notification = Notification(
+                severity=AlertSeverity.CRITICAL,
+                title=self.app_id,
+                message=self.fatal_msg,
+                app_id=self.app_id,
+                metadata={"runtime": self.runtime},
+            )
+            self.notification_dispatcher.send(notification)
+        except Exception:
+            self.logger.warning("Failed to dispatch fatal notification", exc_info=True)
 
     def _check_flat_thresholds(
         self, consecutive: int, solved: int, failed: int, processed: int,
@@ -474,7 +501,7 @@ class BaseScraper(FunWatchMixin):
                     "threshold": self.alert_threshold,
                 },
             )
-            # WP-07: notification dispatch will be added here
+            self._dispatch_fatal_notification()
 
     def _fatal_check_categorized(self, error_breakdown: dict[str, int]) -> None:
         """Evaluate RequestMetrics counters against per-category thresholds.
