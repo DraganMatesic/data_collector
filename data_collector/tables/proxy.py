@@ -31,6 +31,7 @@ class ProxyReservation(Base):
     reserved_at = Column(DateTime, nullable=False)
     ttl_seconds = Column(Integer, default=1800)
     released = Column(Boolean, default=False, nullable=False)
+    released_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
         Index(
