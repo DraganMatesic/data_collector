@@ -98,6 +98,7 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
 
     update_app_status(database, app_id, run_status=RunStatus.RUNNING, runtime_id=runtime)
 
+    scraper = None
     try:
         metrics = RequestMetrics()
         scraper = {class_name}(
@@ -129,7 +130,8 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
 
         scraper.metrics.log_stats(logger)
     finally:
-        scraper.cleanup()
+        if scraper is not None:
+            scraper.cleanup()
         service.stop()
 
 
@@ -236,6 +238,7 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
 
     update_app_status(database, app_id, run_status=RunStatus.RUNNING, runtime_id=runtime)
 
+    scraper = None
     try:
         metrics = RequestMetrics()
         scraper = {class_name}(
@@ -267,7 +270,8 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
 
         scraper.metrics.log_stats(logger)
     finally:
-        scraper.cleanup()
+        if scraper is not None:
+            scraper.cleanup()
         service.stop()
 
 
@@ -367,6 +371,7 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
 
     update_app_status(database, app_id, run_status=RunStatus.RUNNING, runtime_id=runtime)
 
+    scraper = None
     try:
         metrics = RequestMetrics()
         scraper = {class_name}(
@@ -398,7 +403,8 @@ def init(runtime: str, args: dict[str, Any] | None = None) -> None:
 
         scraper.metrics.log_stats(logger)
     finally:
-        scraper.cleanup()
+        if scraper is not None:
+            scraper.cleanup()
         service.stop()
 
 
