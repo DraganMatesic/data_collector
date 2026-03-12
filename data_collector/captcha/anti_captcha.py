@@ -1,8 +1,8 @@
 """AntiCaptcha provider implementation.
 
 Implements the BaseCaptchaProvider interface for the AntiCaptcha service
-(anti-captcha.com). Communicates via three REST endpoints: createTask,
-getTaskResult, and getBalance.
+(anti-captcha.com). Communicates via REST endpoints: createTask,
+getTaskResult, getBalance, and reporting methods.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from typing import Any
 from data_collector.captcha.metrics import CaptchaMetrics
 from data_collector.captcha.models import CaptchaError, CaptchaResult, CaptchaTaskType, CaptchaTimeout
 from data_collector.captcha.provider import BaseCaptchaProvider
+from data_collector.enums.captcha import CaptchaErrorCategory
+from data_collector.utilities.database.main import Database
 from data_collector.utilities.request import Request
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,9 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
         max_retries: Number of retries on CaptchaTimeout before giving up.
         poll_interval: Seconds between polling attempts for task result.
         metrics: Optional shared CaptchaMetrics instance for cost tracking.
+        database: Optional Database instance for persisting CaptchaLog records.
+        app_id: Application identifier for CaptchaLog records.
+        runtime: Runtime identifier for CaptchaLog records.
     """
 
     _TASK_TYPE_MAP: dict[CaptchaTaskType, str] = {
@@ -56,6 +61,63 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
         CaptchaTaskType.IMAGE: "text",
     }
 
+    _ERROR_CATEGORY_MAP: dict[str, CaptchaErrorCategory] = {
+        # AUTH -- bad key, suspended account, IP restrictions
+        "ERROR_KEY_DOES_NOT_EXIST": CaptchaErrorCategory.AUTH,
+        "ERROR_IP_NOT_ALLOWED": CaptchaErrorCategory.AUTH,
+        "ERROR_IP_BLOCKED": CaptchaErrorCategory.AUTH,
+        "ERROR_ACCOUNT_SUSPENDED": CaptchaErrorCategory.AUTH,
+        # BALANCE -- zero or negative balance
+        "ERROR_ZERO_BALANCE": CaptchaErrorCategory.BALANCE,
+        # PROXY -- proxy connection, authentication, and compatibility errors
+        "ERROR_PROXY_CONNECT_REFUSED": CaptchaErrorCategory.PROXY,
+        "ERROR_PROXY_CONNECT_TIMEOUT": CaptchaErrorCategory.PROXY,
+        "ERROR_PROXY_READ_TIMEOUT": CaptchaErrorCategory.PROXY,
+        "ERROR_PROXY_BANNED": CaptchaErrorCategory.PROXY,
+        "ERROR_PROXY_TRANSPARENT": CaptchaErrorCategory.PROXY,
+        "ERROR_PROXY_HAS_NO_IMAGE_SUPPORT": CaptchaErrorCategory.PROXY,
+        "ERROR_PROXY_INCOMPATIBLE_HTTP_VERSION": CaptchaErrorCategory.PROXY,
+        "ERROR_PROXY_NOT_AUTHORISED": CaptchaErrorCategory.PROXY,
+        # TASK -- unsupported task type, bad parameters, missing fields
+        "ERROR_TASK_ABSENT": CaptchaErrorCategory.TASK,
+        "ERROR_TASK_NOT_SUPPORTED": CaptchaErrorCategory.TASK,
+        "ERROR_INCORRECT_SESSION_DATA": CaptchaErrorCategory.TASK,
+        "ERROR_IMAGE_TYPE_NOT_SUPPORTED": CaptchaErrorCategory.TASK,
+        "ERROR_ZERO_CAPTCHA_FILESIZE": CaptchaErrorCategory.TASK,
+        "ERROR_TOO_BIG_CAPTCHA_FILESIZE": CaptchaErrorCategory.TASK,
+        "ERROR_NO_SUCH_METHOD": CaptchaErrorCategory.TASK,
+        # SOLVE -- unsolvable captcha, worker failures, invalid site configuration
+        "ERROR_CAPTCHA_UNSOLVABLE": CaptchaErrorCategory.SOLVE,
+        "ERROR_BAD_DUPLICATES": CaptchaErrorCategory.SOLVE,
+        "ERROR_RECAPTCHA_TIMEOUT": CaptchaErrorCategory.SOLVE,
+        "ERROR_RECAPTCHA_INVALID_SITEKEY": CaptchaErrorCategory.SOLVE,
+        "ERROR_RECAPTCHA_INVALID_DOMAIN": CaptchaErrorCategory.SOLVE,
+        "ERROR_RECAPTCHA_OLD_BROWSER": CaptchaErrorCategory.SOLVE,
+        "ERROR_TOKEN_EXPIRED": CaptchaErrorCategory.SOLVE,
+        "ERROR_VISIBLE_RECAPTCHA": CaptchaErrorCategory.SOLVE,
+        "ERROR_ALL_WORKERS_FILTERED": CaptchaErrorCategory.SOLVE,
+        "ERROR_FAILED_LOADING_WIDGET": CaptchaErrorCategory.SOLVE,
+        "ERROR_TASK_CANCELED": CaptchaErrorCategory.SOLVE,
+        "ERROR_NO_SUCH_CAPCHA_ID": CaptchaErrorCategory.SOLVE,
+        "ERROR_TEMPLATE_NOT_FOUND": CaptchaErrorCategory.SOLVE,
+        "ERROR_INVALID_KEY_TYPE": CaptchaErrorCategory.SOLVE,
+        # RATE_LIMIT -- no available workers or slots
+        "ERROR_NO_SLOT_AVAILABLE": CaptchaErrorCategory.RATE_LIMIT,
+    }
+
+    _RECAPTCHA_TYPES: frozenset[CaptchaTaskType] = frozenset({
+        CaptchaTaskType.RECAPTCHA_V2,
+        CaptchaTaskType.RECAPTCHA_V2_PROXY,
+        CaptchaTaskType.RECAPTCHA_V3,
+    })
+
+    _REPORT_INCORRECT_MAP: dict[CaptchaTaskType, str] = {
+        CaptchaTaskType.RECAPTCHA_V2: "/reportIncorrectRecaptcha",
+        CaptchaTaskType.RECAPTCHA_V2_PROXY: "/reportIncorrectRecaptcha",
+        CaptchaTaskType.RECAPTCHA_V3: "/reportIncorrectRecaptcha",
+        CaptchaTaskType.IMAGE: "/reportIncorrectImageCaptcha",
+    }
+
     def __init__(
         self,
         api_key: str,
@@ -65,11 +127,26 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
         max_retries: int = 2,
         poll_interval: int = 5,
         metrics: CaptchaMetrics | None = None,
+        database: Database | None = None,
+        app_id: str | None = None,
+        runtime: str | None = None,
     ) -> None:
         super().__init__(
-            request, timeout=timeout, max_retries=max_retries, poll_interval=poll_interval, metrics=metrics,
+            request,
+            timeout=timeout,
+            max_retries=max_retries,
+            poll_interval=poll_interval,
+            metrics=metrics,
+            database=database,
+            app_id=app_id,
+            runtime=runtime,
         )
         self.api_key = api_key
+
+    @property
+    def provider_name(self) -> str:
+        """Return the machine-readable provider identifier."""
+        return "anti_captcha"
 
     # --- Public solve methods ---
 
@@ -85,6 +162,7 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
             create_function=lambda: self._create_task(task),
             task_type=task_type,
             poll_function=self._poll_result,
+            page_url=page_url,
         )
 
     def solve_recaptcha_v2_proxy(
@@ -109,6 +187,7 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
             create_function=lambda: self._create_task(task),
             task_type=task_type,
             poll_function=self._poll_result,
+            page_url=page_url,
         )
 
     def solve_recaptcha_v3(
@@ -131,6 +210,7 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
             create_function=lambda: self._create_task(task),
             task_type=task_type,
             poll_function=self._poll_result,
+            page_url=page_url,
         )
 
     def solve_turnstile(self, site_key: str, page_url: str) -> CaptchaResult:
@@ -145,6 +225,7 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
             create_function=lambda: self._create_task(task),
             task_type=task_type,
             poll_function=self._poll_result,
+            page_url=page_url,
         )
 
     def solve_turnstile_proxy(
@@ -169,9 +250,10 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
             create_function=lambda: self._create_task(task),
             task_type=task_type,
             poll_function=self._poll_result,
+            page_url=page_url,
         )
 
-    def solve_image(self, image_data: bytes) -> CaptchaResult:
+    def solve_image(self, image_data: bytes, page_url: str) -> CaptchaResult:
         """Solve an image captcha (distorted text recognition)."""
         task_type = CaptchaTaskType.IMAGE
         encoded_body = base64.b64encode(image_data).decode("ascii")
@@ -183,6 +265,7 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
             create_function=lambda: self._create_task(task),
             task_type=task_type,
             poll_function=self._poll_result,
+            page_url=page_url,
         )
 
     def get_balance(self) -> float:
@@ -197,6 +280,63 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
         payload = {"clientKey": self.api_key}
         response_data = self._post_api("/getBalance", payload)
         return float(response_data["balance"])
+
+    # --- Reporting methods ---
+
+    def report_correct(self, task_id: str, task_type: CaptchaTaskType) -> bool:
+        """Report that a reCAPTCHA solution was verified as correct.
+
+        Only supported for reCAPTCHA v2/v3 types. Must be called within
+        60 seconds of task completion.
+
+        Args:
+            task_id: The provider task identifier to report.
+            task_type: The captcha type that was solved.
+
+        Returns:
+            True if the report was accepted, False if unsupported or failed.
+        """
+        if task_type not in self._RECAPTCHA_TYPES:
+            return False
+
+        try:
+            self._post_api("/reportCorrectRecaptcha", {
+                "clientKey": self.api_key,
+                "taskId": int(task_id),
+            })
+            self._update_log_correctness(task_id, is_correct=True)
+            return True
+        except CaptchaError:
+            logger.warning("Failed to report correct for task %s", task_id, exc_info=True)
+            return False
+
+    def report_incorrect(self, task_id: str, task_type: CaptchaTaskType) -> bool:
+        """Report that a captcha solution was verified as incorrect.
+
+        Supported for reCAPTCHA v2/v3 and image captcha types. Must be
+        called within 60 seconds of task completion.
+
+        Args:
+            task_id: The provider task identifier to report.
+            task_type: The captcha type that was solved.
+
+        Returns:
+            True if the report was accepted, False if unsupported or failed.
+        """
+        endpoint = self._REPORT_INCORRECT_MAP.get(task_type)
+        if endpoint is None:
+            return False
+
+        try:
+            self._post_api(endpoint, {
+                "clientKey": self.api_key,
+                "taskId": int(task_id),
+            })
+            self._update_log_correctness(task_id, is_correct=False)
+            return True
+        except CaptchaError:
+            logger.warning("Failed to report incorrect for task %s", task_id, exc_info=True)
+            return False
 
     # --- Private API methods ---
 
@@ -228,10 +368,13 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
         error_id = response_data.get("errorId", 0)
 
         if error_id != 0:
+            error_code = response_data.get("errorCode", "UNKNOWN")
+            category = self._ERROR_CATEGORY_MAP.get(error_code, CaptchaErrorCategory.UNKNOWN)
             raise CaptchaError(
                 error_id=error_id,
-                error_code=response_data.get("errorCode", "UNKNOWN"),
+                error_code=error_code,
                 error_description=response_data.get("errorDescription", "Unknown error"),
+                category=category,
             )
 
         return response_data

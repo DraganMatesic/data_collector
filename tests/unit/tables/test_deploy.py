@@ -142,6 +142,60 @@ def test_populate_tables_returns_false_on_error(
     assert deploy.populate_tables() is False
 
 
+@patch(f"{_DEPLOY_MODULE}.Database")
+@patch(f"{_DEPLOY_MODULE}.MainDatabaseSettings")
+def test_populate_tables_seeds_captcha_solve_status(
+    _mock_settings: MagicMock,
+    mock_db_cls: MagicMock,
+) -> None:
+    from data_collector.tables.captcha import CodebookCaptchaSolveStatus
+
+    mock_db = mock_db_cls.return_value
+    mock_session = MagicMock()
+    mock_db.create_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_db.create_session.return_value.__exit__ = MagicMock(return_value=False)
+
+    deploy = Deploy()
+    deploy.populate_tables()
+
+    merge_calls = mock_db.merge.call_args_list
+    captcha_status_calls = [
+        call for call in merge_calls
+        if call[0][0] and isinstance(call[0][0][0], CodebookCaptchaSolveStatus)
+    ]
+    assert len(captcha_status_calls) == 1
+    records = captcha_status_calls[0][0][0]
+    record_ids = {record.id for record in records}
+    assert record_ids == {1, 2, 3}
+
+
+@patch(f"{_DEPLOY_MODULE}.Database")
+@patch(f"{_DEPLOY_MODULE}.MainDatabaseSettings")
+def test_populate_tables_seeds_captcha_error_category(
+    _mock_settings: MagicMock,
+    mock_db_cls: MagicMock,
+) -> None:
+    from data_collector.tables.captcha import CodebookCaptchaErrorCategory
+
+    mock_db = mock_db_cls.return_value
+    mock_session = MagicMock()
+    mock_db.create_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_db.create_session.return_value.__exit__ = MagicMock(return_value=False)
+
+    deploy = Deploy()
+    deploy.populate_tables()
+
+    merge_calls = mock_db.merge.call_args_list
+    captcha_category_calls = [
+        call for call in merge_calls
+        if call[0][0] and isinstance(call[0][0][0], CodebookCaptchaErrorCategory)
+    ]
+    assert len(captcha_category_calls) == 1
+    records = captcha_category_calls[0][0][0]
+    record_ids = {record.id for record in records}
+    assert record_ids == {1, 2, 3, 4, 5, 6, 7}
+
+
 # ---------------------------------------------------------------------------
 # Splunk provisioning tests
 # ---------------------------------------------------------------------------

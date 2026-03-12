@@ -10,11 +10,13 @@ import pytest
 from data_collector.captcha.anti_captcha import AntiCaptchaProvider
 from data_collector.captcha.metrics import CaptchaMetrics
 from data_collector.captcha.models import CaptchaError, CaptchaResult, CaptchaTaskType, CaptchaTimeout
+from data_collector.enums.captcha import CaptchaErrorCategory
 from data_collector.utilities.request import Request
 
 # Alias to avoid repeating the pyright ignore on every access
 _TASK_MAP = AntiCaptchaProvider._TASK_TYPE_MAP  # pyright: ignore[reportPrivateUsage]
 _SOLUTION_MAP = AntiCaptchaProvider._SOLUTION_FIELD_MAP  # pyright: ignore[reportPrivateUsage]
+_ERROR_MAP = AntiCaptchaProvider._ERROR_CATEGORY_MAP  # pyright: ignore[reportPrivateUsage]
 
 
 def _make_provider(
@@ -40,6 +42,14 @@ def _mock_response(data: dict[str, object]) -> MagicMock:
     response = MagicMock()
     response.json.return_value = data
     return response
+
+
+class TestProviderName:
+    """Tests for provider_name property."""
+
+    def test_returns_anti_captcha(self) -> None:
+        provider = _make_provider()
+        assert provider.provider_name == "anti_captcha"
 
 
 class TestTaskTypeMap:
@@ -86,6 +96,69 @@ class TestSolutionFieldMap:
     def test_all_task_types_mapped(self) -> None:
         for task_type in CaptchaTaskType:
             assert task_type in _SOLUTION_MAP
+
+
+class TestErrorCategoryMap:
+    """Tests for _ERROR_CATEGORY_MAP correctness."""
+
+    def test_auth_errors(self) -> None:
+        for code in ("ERROR_KEY_DOES_NOT_EXIST", "ERROR_IP_NOT_ALLOWED", "ERROR_IP_BLOCKED", "ERROR_ACCOUNT_SUSPENDED"):
+            assert _ERROR_MAP[code] == CaptchaErrorCategory.AUTH
+
+    def test_balance_errors(self) -> None:
+        assert _ERROR_MAP["ERROR_ZERO_BALANCE"] == CaptchaErrorCategory.BALANCE
+
+    def test_proxy_errors(self) -> None:
+        proxy_codes = (
+            "ERROR_PROXY_CONNECT_REFUSED", "ERROR_PROXY_CONNECT_TIMEOUT",
+            "ERROR_PROXY_READ_TIMEOUT", "ERROR_PROXY_BANNED",
+            "ERROR_PROXY_NOT_AUTHORISED",
+        )
+        for code in proxy_codes:
+            assert _ERROR_MAP[code] == CaptchaErrorCategory.PROXY
+
+    def test_task_errors(self) -> None:
+        for code in ("ERROR_TASK_ABSENT", "ERROR_TASK_NOT_SUPPORTED", "ERROR_IMAGE_TYPE_NOT_SUPPORTED"):
+            assert _ERROR_MAP[code] == CaptchaErrorCategory.TASK
+
+    def test_solve_errors(self) -> None:
+        for code in ("ERROR_CAPTCHA_UNSOLVABLE", "ERROR_RECAPTCHA_TIMEOUT", "ERROR_RECAPTCHA_INVALID_SITEKEY"):
+            assert _ERROR_MAP[code] == CaptchaErrorCategory.SOLVE
+
+    def test_rate_limit_errors(self) -> None:
+        assert _ERROR_MAP["ERROR_NO_SLOT_AVAILABLE"] == CaptchaErrorCategory.RATE_LIMIT
+
+
+class TestPostApiErrorCategory:
+    """Tests that _post_api attaches correct CaptchaErrorCategory."""
+
+    def test_known_error_code_gets_category(self) -> None:
+        provider = _make_provider()
+        mock_response = _mock_response({
+            "errorId": 10,
+            "errorCode": "ERROR_ZERO_BALANCE",
+            "errorDescription": "Account has zero balance",
+        })
+
+        with patch.object(provider.request, "post", return_value=mock_response), \
+                pytest.raises(CaptchaError) as exc_info:
+            provider._post_api("/createTask", {})  # pyright: ignore[reportPrivateUsage]
+
+        assert exc_info.value.category == CaptchaErrorCategory.BALANCE
+
+    def test_unknown_error_code_gets_unknown_category(self) -> None:
+        provider = _make_provider()
+        mock_response = _mock_response({
+            "errorId": 99,
+            "errorCode": "ERROR_FUTURE_CODE",
+            "errorDescription": "Some new error",
+        })
+
+        with patch.object(provider.request, "post", return_value=mock_response), \
+                pytest.raises(CaptchaError) as exc_info:
+            provider._post_api("/createTask", {})  # pyright: ignore[reportPrivateUsage]
+
+        assert exc_info.value.category == CaptchaErrorCategory.UNKNOWN
 
 
 class TestCreateTask:
@@ -294,7 +367,7 @@ class TestSolveImage:
         })
 
         with patch.object(provider.request, "post", side_effect=[create_response, result_response]) as mock_post:
-            result = provider.solve_image(image_bytes)
+            result = provider.solve_image(image_bytes, page_url="https://example.com/form")
 
         assert result.solution == "captcha123"
         create_payload = mock_post.call_args_list[0][1]["json"]
@@ -390,6 +463,97 @@ class TestGetBalance:
             provider.get_balance()
 
 
+class TestReportCorrect:
+    """Tests for report_correct method."""
+
+    def test_recaptcha_v2_reports_correctly(self) -> None:
+        provider = _make_provider()
+        mock_response = _mock_response({"errorId": 0, "status": "success"})
+
+        with patch.object(provider.request, "post", return_value=mock_response) as mock_post:
+            result = provider.report_correct("123", CaptchaTaskType.RECAPTCHA_V2)
+
+        assert result is True
+        call_args = mock_post.call_args
+        assert "/reportCorrectRecaptcha" in call_args[0][0]
+        assert call_args[1]["json"]["taskId"] == 123
+
+    def test_recaptcha_v3_reports_correctly(self) -> None:
+        provider = _make_provider()
+        mock_response = _mock_response({"errorId": 0, "status": "success"})
+
+        with patch.object(provider.request, "post", return_value=mock_response):
+            result = provider.report_correct("456", CaptchaTaskType.RECAPTCHA_V3)
+
+        assert result is True
+
+    def test_turnstile_returns_false(self) -> None:
+        provider = _make_provider()
+        assert provider.report_correct("123", CaptchaTaskType.TURNSTILE) is False
+
+    def test_image_returns_false(self) -> None:
+        provider = _make_provider()
+        assert provider.report_correct("123", CaptchaTaskType.IMAGE) is False
+
+    def test_api_error_returns_false(self) -> None:
+        provider = _make_provider()
+        mock_response = _mock_response({
+            "errorId": 16,
+            "errorCode": "ERROR_NO_SUCH_CAPCHA_ID",
+            "errorDescription": "Captcha not found",
+        })
+
+        with patch.object(provider.request, "post", return_value=mock_response):
+            result = provider.report_correct("999", CaptchaTaskType.RECAPTCHA_V2)
+
+        assert result is False
+
+
+class TestReportIncorrect:
+    """Tests for report_incorrect method."""
+
+    def test_recaptcha_v2_uses_correct_endpoint(self) -> None:
+        provider = _make_provider()
+        mock_response = _mock_response({"errorId": 0, "status": "success"})
+
+        with patch.object(provider.request, "post", return_value=mock_response) as mock_post:
+            result = provider.report_incorrect("123", CaptchaTaskType.RECAPTCHA_V2)
+
+        assert result is True
+        assert "/reportIncorrectRecaptcha" in mock_post.call_args[0][0]
+
+    def test_image_uses_correct_endpoint(self) -> None:
+        provider = _make_provider()
+        mock_response = _mock_response({"errorId": 0, "status": "success"})
+
+        with patch.object(provider.request, "post", return_value=mock_response) as mock_post:
+            result = provider.report_incorrect("456", CaptchaTaskType.IMAGE)
+
+        assert result is True
+        assert "/reportIncorrectImageCaptcha" in mock_post.call_args[0][0]
+
+    def test_turnstile_returns_false(self) -> None:
+        provider = _make_provider()
+        assert provider.report_incorrect("123", CaptchaTaskType.TURNSTILE) is False
+
+    def test_turnstile_proxy_returns_false(self) -> None:
+        provider = _make_provider()
+        assert provider.report_incorrect("123", CaptchaTaskType.TURNSTILE_PROXY) is False
+
+    def test_api_error_returns_false(self) -> None:
+        provider = _make_provider()
+        mock_response = _mock_response({
+            "errorId": 16,
+            "errorCode": "ERROR_NO_SUCH_CAPCHA_ID",
+            "errorDescription": "Not found",
+        })
+
+        with patch.object(provider.request, "post", return_value=mock_response):
+            result = provider.report_incorrect("999", CaptchaTaskType.RECAPTCHA_V2)
+
+        assert result is False
+
+
 class TestRetryIntegration:
     """Tests for retry behavior with AntiCaptchaProvider."""
 
@@ -417,3 +581,20 @@ class TestRetryIntegration:
         assert metrics.submitted == 2
         assert metrics.timed_out == 1
         assert metrics.solved == 1
+
+
+class TestConstructorPassthrough:
+    """Tests that constructor passes database params to base."""
+
+    def test_database_params_passed_through(self) -> None:
+        mock_database = MagicMock()
+        provider = AntiCaptchaProvider(
+            api_key="key",
+            request=Request(),
+            database=mock_database,
+            app_id="app1",
+            runtime="rt1",
+        )
+        assert provider._database is mock_database  # pyright: ignore[reportPrivateUsage]
+        assert provider._app_id == "app1"  # pyright: ignore[reportPrivateUsage]
+        assert provider._runtime == "rt1"  # pyright: ignore[reportPrivateUsage]

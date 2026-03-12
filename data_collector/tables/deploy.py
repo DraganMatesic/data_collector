@@ -10,9 +10,20 @@ from typing import Any, NamedTuple
 import requests as http_requests
 from sqlalchemy import Table
 
-from data_collector.enums import AlertSeverity, CmdFlag, CmdName, FatalFlag, LogLevel, RunStatus, RuntimeExitCode
+from data_collector.enums import (
+    AlertSeverity,
+    CaptchaErrorCategory,
+    CaptchaSolveStatus,
+    CmdFlag,
+    CmdName,
+    FatalFlag,
+    LogLevel,
+    RunStatus,
+    RuntimeExitCode,
+)
 from data_collector.settings.main import LogSettings, MainDatabaseSettings, SplunkAdminSettings
 from data_collector.tables.apps import CodebookCommandFlags, CodebookCommandList, CodebookFatalFlags, CodebookRunStatus
+from data_collector.tables.captcha import CodebookCaptchaErrorCategory, CodebookCaptchaSolveStatus
 from data_collector.tables.log import CodebookLogLevel
 from data_collector.tables.notifications import CodebookAlertSeverity
 from data_collector.tables.runtime import CodebookRuntimeCodes
@@ -151,6 +162,54 @@ class Deploy:
                 for member in AlertSeverity
             ]
             seed_data.append(SeedData(data=alert_severity, data_label="alert_severity"))
+
+            captcha_solve_status = [
+                CodebookCaptchaSolveStatus(
+                    id=CaptchaSolveStatus.SOLVED.value,
+                    description="Captcha solved successfully",
+                ),
+                CodebookCaptchaSolveStatus(
+                    id=CaptchaSolveStatus.TIMED_OUT.value,
+                    description="Solve attempt exceeded timeout after all retries",
+                ),
+                CodebookCaptchaSolveStatus(
+                    id=CaptchaSolveStatus.FAILED.value,
+                    description="Provider returned an API error during solve",
+                ),
+            ]
+            seed_data.append(SeedData(data=captcha_solve_status, data_label="captcha_solve_status"))
+
+            captcha_error_category = [
+                CodebookCaptchaErrorCategory(
+                    id=CaptchaErrorCategory.AUTH.value,
+                    description="Bad API key or suspended account (fatal)",
+                ),
+                CodebookCaptchaErrorCategory(
+                    id=CaptchaErrorCategory.BALANCE.value,
+                    description="Zero or negative provider balance (fatal)",
+                ),
+                CodebookCaptchaErrorCategory(
+                    id=CaptchaErrorCategory.PROXY.value,
+                    description="Proxy connection or authentication error",
+                ),
+                CodebookCaptchaErrorCategory(
+                    id=CaptchaErrorCategory.TASK.value,
+                    description="Unsupported task type or bad parameters",
+                ),
+                CodebookCaptchaErrorCategory(
+                    id=CaptchaErrorCategory.SOLVE.value,
+                    description="Unsolvable captcha or worker failure",
+                ),
+                CodebookCaptchaErrorCategory(
+                    id=CaptchaErrorCategory.RATE_LIMIT.value,
+                    description="No available workers or slots",
+                ),
+                CodebookCaptchaErrorCategory(
+                    id=CaptchaErrorCategory.UNKNOWN.value,
+                    description="Unmapped or unexpected error code",
+                ),
+            ]
+            seed_data.append(SeedData(data=captcha_error_category, data_label="captcha_error_category"))
 
             for seed in seed_data:
                 try:

@@ -12,6 +12,12 @@ from data_collector.tables.apps import (
     CodebookFatalFlags,
     CodebookRunStatus,
 )
+from data_collector.tables.captcha import (
+    CaptchaLog,
+    CaptchaLogError,
+    CodebookCaptchaErrorCategory,
+    CodebookCaptchaSolveStatus,
+)
 from data_collector.tables.log import CodebookLogLevel, FunctionLog, FunctionLogError, Logs
 from data_collector.tables.notifications import CodebookAlertSeverity
 from data_collector.tables.proxy import ProxyBlacklist, ProxyReservation
@@ -25,7 +31,11 @@ __all__ = [
     "AppParents",
     "Apps",
     "Base",
+    "CaptchaLog",
+    "CaptchaLogError",
     "CmdFlag",
+    "CodebookCaptchaErrorCategory",
+    "CodebookCaptchaSolveStatus",
     "CmdName",
     "CodebookAlertSeverity",
     "CodebookCommandFlags",

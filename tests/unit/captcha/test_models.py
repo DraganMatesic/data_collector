@@ -3,6 +3,7 @@
 import pytest
 
 from data_collector.captcha.models import CaptchaError, CaptchaResult, CaptchaTaskType, CaptchaTimeout
+from data_collector.enums.captcha import CaptchaErrorCategory
 
 
 class TestCaptchaTaskType:
@@ -98,6 +99,28 @@ class TestCaptchaError:
     def test_can_be_raised_and_caught(self) -> None:
         with pytest.raises(CaptchaError, match="ERROR_KEY"):
             raise CaptchaError(error_id=1, error_code="ERROR_KEY", error_description="bad key")
+
+    def test_category_defaults_to_unknown(self) -> None:
+        error = CaptchaError(error_id=1, error_code="ERR", error_description="desc")
+        assert error.category == CaptchaErrorCategory.UNKNOWN
+
+    def test_category_can_be_set(self) -> None:
+        error = CaptchaError(
+            error_id=1,
+            error_code="ERROR_ZERO_BALANCE",
+            error_description="Zero balance",
+            category=CaptchaErrorCategory.BALANCE,
+        )
+        assert error.category == CaptchaErrorCategory.BALANCE
+
+    def test_category_auth(self) -> None:
+        error = CaptchaError(
+            error_id=1,
+            error_code="ERROR_KEY_DOES_NOT_EXIST",
+            error_description="Bad key",
+            category=CaptchaErrorCategory.AUTH,
+        )
+        assert error.category == CaptchaErrorCategory.AUTH
 
 
 class TestCaptchaTimeout:
