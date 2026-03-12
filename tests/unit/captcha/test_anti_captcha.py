@@ -160,6 +160,32 @@ class TestPostApiErrorCategory:
 
         assert exc_info.value.category == CaptchaErrorCategory.UNKNOWN
 
+    def test_non_json_response_raises_captcha_error(self) -> None:
+        """Non-JSON response (e.g. 5xx HTML page) is converted to CaptchaError."""
+        import json
+
+        provider = _make_provider()
+        mock_response = MagicMock()
+        mock_response.json.side_effect = json.JSONDecodeError("Expecting value", "<html>", 0)
+        mock_response.status_code = 502
+
+        with patch.object(provider.request, "post", return_value=mock_response), \
+                pytest.raises(CaptchaError) as exc_info:
+            provider._post_api("/createTask", {})  # pyright: ignore[reportPrivateUsage]
+
+        assert exc_info.value.error_code == "INVALID_RESPONSE"
+        assert "502" in exc_info.value.error_description
+
+    def test_none_response_raises_captcha_error(self) -> None:
+        """None response (connection failure) is converted to CaptchaError."""
+        provider = _make_provider()
+
+        with patch.object(provider.request, "post", return_value=None), \
+                pytest.raises(CaptchaError) as exc_info:
+            provider._post_api("/createTask", {})  # pyright: ignore[reportPrivateUsage]
+
+        assert exc_info.value.error_code == "REQUEST_FAILED"
+
 
 class TestCreateTask:
     """Tests for _create_task API call."""
