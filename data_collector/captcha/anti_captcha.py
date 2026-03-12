@@ -8,6 +8,7 @@ getTaskResult, getBalance, and reporting methods.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import time
 from typing import Any
@@ -364,7 +365,15 @@ class AntiCaptchaProvider(BaseCaptchaProvider):
                 error_description=f"HTTP request to {url} returned None",
             )
 
-        response_data: dict[str, Any] = response.json()
+        try:
+            response_data: dict[str, Any] = response.json()
+        except (json.JSONDecodeError, ValueError) as decode_error:
+            raise CaptchaError(
+                error_id=-1,
+                error_code="INVALID_RESPONSE",
+                error_description=f"Non-JSON response from {url} (HTTP {response.status_code})",
+            ) from decode_error
+
         error_id = response_data.get("errorId", 0)
 
         if error_id != 0:
