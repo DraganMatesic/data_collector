@@ -41,6 +41,8 @@ class PendingCommand:
         args: Optional key-value arguments for the command.
         source_cmd_time: Raw ``cmd_time`` from the Apps row.  ``None`` when
             the DB column was NULL or the command came from RabbitMQ.
+        source_cmd_name: Raw ``cmd_name`` FK value from the Apps row.
+            ``None`` for RabbitMQ-sourced commands.
     """
 
     app_id: str
@@ -50,6 +52,7 @@ class PendingCommand:
     source: str
     args: dict[str, Any] | None = None
     source_cmd_time: datetime | None = None
+    source_cmd_name: str | None = None
 
 
 class CommandHandler:
@@ -144,13 +147,14 @@ class CommandHandler:
                     timestamp=raw_cmd_time if raw_cmd_time is not None else datetime.now(UTC),
                     source="database",
                     source_cmd_time=raw_cmd_time,
+                    source_cmd_name=str(app.cmd_name),
                 )
                 self._command_queue.put(pending)
 
             # Leave cmd_flag as PENDING until the command is actually
-            # executed. mark_database_command_executed() is called by the
-            # Manager after execution so that a crash between poll and
-            # execution does not silently lose the command.
+            # executed.  log_command() is called by the Manager after
+            # execution so that a crash between poll and execution does
+            # not silently lose the command.
 
     def get_pending_commands(self) -> list[PendingCommand]:
         """Drain the command queue and return all pending commands.
@@ -196,17 +200,22 @@ class CommandHandler:
             # Mark the source Apps row only if it still represents the
             # processed command.  A newer PENDING command written between
             # poll_database_commands() and this point must not be overwritten.
+            # The guard matches on cmd_flag, cmd_time, and cmd_name -- the
+            # strongest identity available from the single-slot design.
             if command.source == "database":
                 time_filter = (
                     Apps.cmd_time == command.source_cmd_time
                     if command.source_cmd_time is not None
                     else Apps.cmd_time.is_(None)
                 )
-                statement = select(Apps).where(
+                conditions = [
                     Apps.app == command.app_id,
                     Apps.cmd_flag == CmdFlag.PENDING,
                     time_filter,
-                )
+                ]
+                if command.source_cmd_name is not None:
+                    conditions.append(Apps.cmd_name == command.source_cmd_name)
+                statement = select(Apps).where(*conditions)
                 row = self._database.query(statement, session).scalar_one_or_none()
                 if row is not None:
                     row.cmd_flag = flag  # type: ignore[assignment]

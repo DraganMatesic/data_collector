@@ -127,6 +127,15 @@ class RetentionCleaner:
             package_root = Path(__file__).resolve().parent.parent
 
             for app in expired_apps:
+                session.delete(app)
+
+            session.flush()
+
+            # Disk cleanup after DB delete succeeds (flush validates FK
+            # constraints).  If commit later fails the directories are
+            # still present; if commit succeeds but rmtree fails the
+            # orphan directories are harmless and can be cleaned manually.
+            for app in expired_apps:
                 group_name = str(app.group_name)
                 parent_name = str(app.parent_name)
                 app_name = str(app.app_name)
@@ -139,12 +148,13 @@ class RetentionCleaner:
                         group_name, parent_name, app_name,
                     )
 
-                session.delete(app)
-
-            session.flush()
-
             # Clean up orphaned AppParents (no remaining Apps reference them)
+            seen_parents: set[tuple[str, str]] = set()
             for app in expired_apps:
+                parent_key = (str(app.group_name), str(app.parent_name))
+                if parent_key in seen_parents:
+                    continue
+                seen_parents.add(parent_key)
                 remaining_apps = self._database.query(
                     select(func.count()).select_from(Apps).where(
                         Apps.group_name == app.group_name,
