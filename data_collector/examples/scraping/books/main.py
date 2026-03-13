@@ -124,6 +124,7 @@ def _register_app(database: Database, app_info: AppInfo) -> None:
                 run_status=RunStatus.NOT_RUNNING,
                 fatal_flag=FatalFlag.NONE,
                 disable=True,
+                managed=False,
             ),
             session,
             filter_cols=["group_name", "parent_name", "app_name"],
