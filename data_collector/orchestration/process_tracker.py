@@ -368,7 +368,7 @@ class ProcessTracker:
 
         # Unix: send signal 0 to check existence
         try:
-            os.kill(pid, signal.SIG_DFL)
+            os.kill(pid, 0)
             return True
         except ProcessLookupError:
             return False
