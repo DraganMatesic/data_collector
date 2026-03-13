@@ -64,10 +64,10 @@ class CommandConsumer:
         self._consumer_thread = threading.Thread(
             target=self._consume_loop,
             daemon=True,
-            name=f"rabbitmq-consumer-{self._settings.rabbit_queue}",
+            name=f"rabbitmq-consumer-{self._settings.queue}",
         )
         self._consumer_thread.start()
-        logger.info("Command consumer started for queue '%s'", self._settings.rabbit_queue)
+        logger.info("Command consumer started for queue '%s'", self._settings.queue)
 
     def stop(self, timeout: float = 10.0) -> None:
         """Signal the consumer to stop and wait for the thread to exit.
@@ -88,7 +88,8 @@ class CommandConsumer:
             self._consumer_thread.join(timeout=timeout)
             if self._consumer_thread.is_alive():
                 logger.warning("Consumer thread did not exit within %.1f seconds", timeout)
-            self._consumer_thread = None
+            else:
+                self._consumer_thread = None
 
         logger.info("Command consumer stopped")
 
@@ -104,15 +105,15 @@ class CommandConsumer:
         ``start_consuming()``. On connection errors, reconnects with
         backoff unless the stop event is set.
         """
-        base_delay = self._settings.rabbit_reconnect_base_delay
-        max_delay = self._settings.rabbit_reconnect_max_delay
+        base_delay = self._settings.reconnect_base_delay
+        max_delay = self._settings.reconnect_max_delay
 
         while not self._stop_event.is_set():
             try:
                 channel = self._connection.ensure_connected()
-                declare_topology(channel, self._settings.rabbit_queue)
+                declare_topology(channel, self._settings.queue)
 
-                queue_name = self._settings.rabbit_queue
+                queue_name = self._settings.queue
                 broadcast_queue_name = f"{queue_name}_broadcast"
 
                 channel.basic_consume(  # pyright: ignore[reportUnknownMemberType]

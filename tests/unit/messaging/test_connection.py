@@ -13,9 +13,9 @@ from data_collector.settings.rabbitmq import RabbitMQSettings
 
 def _make_settings(**overrides: object) -> RabbitMQSettings:
     defaults: dict[str, object] = {
-        "rabbit_reconnect_max_attempts": 3,
-        "rabbit_reconnect_base_delay": 0,
-        "rabbit_reconnect_max_delay": 0,
+        "reconnect_max_attempts": 3,
+        "reconnect_base_delay": 0,
+        "reconnect_max_delay": 0,
     }
     defaults.update(overrides)
     return RabbitMQSettings(**defaults)  # type: ignore[arg-type]
@@ -44,7 +44,7 @@ class TestConnect:
         mock_connection.channel.return_value = mock_channel
         mock_blocking.return_value = mock_connection
 
-        connection = RabbitMQConnection(_make_settings(rabbit_prefetch=5))
+        connection = RabbitMQConnection(_make_settings(prefetch=5))
         connection.connect()
 
         mock_channel.basic_qos.assert_called_once_with(prefetch_count=5)
@@ -56,10 +56,10 @@ class TestConnect:
         mock_blocking.return_value = mock_connection
 
         settings = _make_settings(
-            rabbit_host="myhost",
-            rabbit_port=5673,
-            rabbit_username="admin",
-            rabbit_password="secret",
+            host="myhost",
+            port=5673,
+            username="admin",
+            password="secret",
         )
         connection = RabbitMQConnection(settings)
         connection.connect()
@@ -200,8 +200,8 @@ class TestEnsureConnected:
         ]
 
         settings = _make_settings(
-            rabbit_reconnect_base_delay=1,
-            rabbit_reconnect_max_delay=10,
+            reconnect_base_delay=1,
+            reconnect_max_delay=10,
         )
         connection = RabbitMQConnection(settings)
         connection.ensure_connected()
@@ -217,7 +217,7 @@ class TestEnsureConnected:
     ) -> None:
         mock_blocking.side_effect = pika.exceptions.AMQPConnectionError("unreachable")
 
-        connection = RabbitMQConnection(_make_settings(rabbit_reconnect_max_attempts=3))
+        connection = RabbitMQConnection(_make_settings(reconnect_max_attempts=3))
         with pytest.raises(ConnectionError, match="Failed to connect.*3 attempts"):
             connection.ensure_connected()
 
