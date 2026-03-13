@@ -18,13 +18,16 @@ def _make_pending(
     command: CmdName = CmdName.START,
     issued_by: str = "test_user",
     source: str = "database",
+    source_cmd_time: datetime | None = None,
 ) -> PendingCommand:
+    timestamp = source_cmd_time if source_cmd_time is not None else datetime.now(UTC)
     return PendingCommand(
         app_id=app_id,
         command=command,
         issued_by=issued_by,
-        timestamp=datetime.now(UTC),
+        timestamp=timestamp,
         source=source,
+        source_cmd_time=source_cmd_time,
     )
 
 
@@ -166,13 +169,33 @@ class TestLogCommand:
         mock_database.query.return_value.scalar_one_or_none.return_value = None
 
         handler = CommandHandler(mock_database, logger=MagicMock())
-        command = _make_pending(source="database")
+        command = _make_pending(source="database", source_cmd_time=datetime.now(UTC))
 
         handler.log_command(command, executed=True)
 
         # CommandLog audit record is still written
         mock_session.add.assert_called_once()
         # But no Apps row attributes were mutated (no row returned)
+        mock_session.commit.assert_called_once()
+
+    def test_log_command_handles_null_cmd_time(self) -> None:
+        """NULL cmd_time rows must still be matched via IS NULL."""
+        mock_database = MagicMock()
+        mock_session = MagicMock()
+        mock_database.create_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_database.create_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_row = MagicMock()
+        mock_database.query.return_value.scalar_one_or_none.return_value = mock_row
+
+        handler = CommandHandler(mock_database, logger=MagicMock())
+        # source_cmd_time=None simulates a DB row with NULL cmd_time
+        command = _make_pending(source="database", source_cmd_time=None)
+
+        handler.log_command(command, executed=True)
+
+        # The Apps row should be updated despite NULL cmd_time
+        assert mock_row.cmd_flag == CmdFlag.EXECUTED
         mock_session.commit.assert_called_once()
 
 

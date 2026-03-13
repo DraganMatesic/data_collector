@@ -35,9 +35,12 @@ class PendingCommand:
         app_id: 64-char SHA-256 target app identifier.
         command: The command to execute.
         issued_by: User or system that issued the command.
-        timestamp: When the command was created.
+        timestamp: When the command was created (synthesised from
+            ``datetime.now(UTC)`` when the source row has no ``cmd_time``).
         source: Origin of the command (``"database"`` or ``"rabbitmq"``).
         args: Optional key-value arguments for the command.
+        source_cmd_time: Raw ``cmd_time`` from the Apps row.  ``None`` when
+            the DB column was NULL or the command came from RabbitMQ.
     """
 
     app_id: str
@@ -46,6 +49,7 @@ class PendingCommand:
     timestamp: datetime
     source: str
     args: dict[str, Any] | None = None
+    source_cmd_time: datetime | None = None
 
 
 class CommandHandler:
@@ -132,12 +136,14 @@ class CommandHandler:
                     session.commit()
                     continue
 
+                raw_cmd_time = app.cmd_time if isinstance(app.cmd_time, datetime) else None
                 pending = PendingCommand(
                     app_id=str(app.app),
                     command=command_value,
                     issued_by=str(app.cmd_by) if app.cmd_by is not None else "unknown",  # type: ignore[redundant-expr]
-                    timestamp=app.cmd_time if isinstance(app.cmd_time, datetime) else datetime.now(UTC),
+                    timestamp=raw_cmd_time if raw_cmd_time is not None else datetime.now(UTC),
                     source="database",
+                    source_cmd_time=raw_cmd_time,
                 )
                 self._command_queue.put(pending)
 
@@ -191,10 +197,15 @@ class CommandHandler:
             # processed command.  A newer PENDING command written between
             # poll_database_commands() and this point must not be overwritten.
             if command.source == "database":
+                time_filter = (
+                    Apps.cmd_time == command.source_cmd_time
+                    if command.source_cmd_time is not None
+                    else Apps.cmd_time.is_(None)
+                )
                 statement = select(Apps).where(
                     Apps.app == command.app_id,
                     Apps.cmd_flag == CmdFlag.PENDING,
-                    Apps.cmd_time == command.timestamp,
+                    time_filter,
                 )
                 row = self._database.query(statement, session).scalar_one_or_none()
                 if row is not None:
