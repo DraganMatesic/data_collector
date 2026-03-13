@@ -156,6 +156,25 @@ class TestLogCommand:
         record = mock_session.add.call_args[0][0]
         assert record.cmd_flag == CmdFlag.NOT_EXECUTED
 
+    def test_log_command_skips_update_when_newer_command_pending(self) -> None:
+        """Guard: a newer PENDING command must not be overwritten."""
+        mock_database = MagicMock()
+        mock_session = MagicMock()
+        mock_database.create_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_database.create_session.return_value.__exit__ = MagicMock(return_value=False)
+        # Simulate no matching row (newer command changed cmd_time/cmd_flag)
+        mock_database.query.return_value.scalar_one_or_none.return_value = None
+
+        handler = CommandHandler(mock_database, logger=MagicMock())
+        command = _make_pending(source="database")
+
+        handler.log_command(command, executed=True)
+
+        # CommandLog audit record is still written
+        mock_session.add.assert_called_once()
+        # But no Apps row attributes were mutated (no row returned)
+        mock_session.commit.assert_called_once()
+
 
 class TestRabbitMQIntegration:
     """Test RabbitMQ consumer start/stop and message callback."""
