@@ -1,0 +1,99 @@
+name: Bug Report
+description: Report a defect in the Data Collector framework.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug. Please fill out the sections below
+        to help diagnose the issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >
+        The version of data_collector where the bug occurs.
+        Run `pip show data_collector` to check.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which framework component is affected?
+      options:
+        - Database / ORM
+        - Settings / Configuration
+        - Logging
+        - Request (HTTP client)
+        - Scraping (BaseScraper / ThreadedScraper)
+        - Proxy
+        - Enums / Codebooks
+        - fun_watch decorator
+        - Orchestration / Manager
+        - Deploy CLI
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug.
+      placeholder: Describe the unexpected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps to reproduce the behavior.
+      placeholder: |
+        1. Configure ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened. Include error messages and tracebacks if available.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Relevant environment details.
+      placeholder: |
+        - OS: Windows 11 / Ubuntu 24.04
+        - Python: 3.13.x
+        - PostgreSQL: 16.x
+        - Installation method: pip install -e ".[dev]"
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other information, logs, or screenshots.
+    validations:
+      required: false
