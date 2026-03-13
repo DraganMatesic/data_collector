@@ -61,14 +61,14 @@ def main() -> None:
         publisher_connection.connect()
         logger.info(
             "Publisher connected",
-            host=settings.rabbit_host,
-            port=settings.rabbit_port,
+            host=settings.host,
+            port=settings.port,
             healthy=publisher_connection.is_healthy(),
         )
 
         channel = publisher_connection.ensure_connected()
-        declare_topology(channel, settings.rabbit_queue)
-        logger.info("Topology declared", queue=settings.rabbit_queue)
+        declare_topology(channel, settings.queue)
+        logger.info("Topology declared", queue=settings.queue)
 
         # --- Start consumer ---
         message_received_signal = threading.Event()
@@ -101,11 +101,11 @@ def main() -> None:
             args={"priority": "high"},
         )
         publisher = CommandPublisher(publisher_connection)
-        publisher.publish_to_manager(command_message, settings.rabbit_queue)
+        publisher.publish_to_manager(command_message, settings.queue)
         logger.info(
             "Published command",
             command=command_message.command.name,
-            routing_key=settings.rabbit_queue,
+            routing_key=settings.queue,
         )
 
         # --- Wait for delivery ---

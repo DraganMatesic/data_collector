@@ -49,23 +49,23 @@ class RabbitMQConnection:
             pika.exceptions.AMQPConnectionError: If the broker is unreachable.
         """
         credentials = pika.PlainCredentials(
-            self._settings.rabbit_username,
-            self._settings.rabbit_password,
+            self._settings.username,
+            self._settings.password,
         )
         parameters = pika.ConnectionParameters(
-            host=self._settings.rabbit_host,
-            port=self._settings.rabbit_port,
+            host=self._settings.host,
+            port=self._settings.port,
             credentials=credentials,
-            heartbeat=self._settings.rabbit_heartbeat,
-            blocked_connection_timeout=self._settings.rabbit_connection_timeout,
+            heartbeat=self._settings.heartbeat,
+            blocked_connection_timeout=self._settings.connection_timeout,
         )
         self._connection = pika.BlockingConnection(parameters)
         self._channel = self._connection.channel()
-        self._channel.basic_qos(prefetch_count=self._settings.rabbit_prefetch)  # pyright: ignore[reportOptionalMemberAccess]
+        self._channel.basic_qos(prefetch_count=self._settings.prefetch)  # pyright: ignore[reportOptionalMemberAccess]
         logger.info(
             "Connected to RabbitMQ at %s:%d",
-            self._settings.rabbit_host,
-            self._settings.rabbit_port,
+            self._settings.host,
+            self._settings.port,
         )
 
     def close(self) -> None:
@@ -161,9 +161,9 @@ class RabbitMQConnection:
         Raises:
             ConnectionError: If all retry attempts are exhausted.
         """
-        max_attempts = self._settings.rabbit_reconnect_max_attempts
-        base_delay = self._settings.rabbit_reconnect_base_delay
-        max_delay = self._settings.rabbit_reconnect_max_delay
+        max_attempts = self._settings.reconnect_max_attempts
+        base_delay = self._settings.reconnect_base_delay
+        max_delay = self._settings.reconnect_max_delay
         last_error: Exception | None = None
 
         for attempt in range(1, max_attempts + 1):
