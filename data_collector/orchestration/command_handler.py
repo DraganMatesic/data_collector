@@ -187,9 +187,15 @@ class CommandHandler:
             )
             session.add(record)
 
-            # Mark the source Apps row only after actual execution
+            # Mark the source Apps row only if it still represents the
+            # processed command.  A newer PENDING command written between
+            # poll_database_commands() and this point must not be overwritten.
             if command.source == "database":
-                statement = select(Apps).where(Apps.app == command.app_id)
+                statement = select(Apps).where(
+                    Apps.app == command.app_id,
+                    Apps.cmd_flag == CmdFlag.PENDING,
+                    Apps.cmd_time == command.timestamp,
+                )
                 row = self._database.query(statement, session).scalar_one_or_none()
                 if row is not None:
                     row.cmd_flag = flag  # type: ignore[assignment]
