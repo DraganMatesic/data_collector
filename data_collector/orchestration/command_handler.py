@@ -152,9 +152,9 @@ class CommandHandler:
                 self._command_queue.put(pending)
 
             # Leave cmd_flag as PENDING until the command is actually
-            # executed. mark_database_command_executed() is called by the
-            # Manager after execution so that a crash between poll and
-            # execution does not silently lose the command.
+            # executed.  log_command() is called by the Manager after
+            # execution so that a crash between poll and execution does
+            # not silently lose the command.
 
     def get_pending_commands(self) -> list[PendingCommand]:
         """Drain the command queue and return all pending commands.
