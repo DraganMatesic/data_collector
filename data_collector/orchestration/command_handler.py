@@ -141,12 +141,10 @@ class CommandHandler:
                 )
                 self._command_queue.put(pending)
 
-                # Mark as executed in DB
-                app.cmd_flag = CmdFlag.EXECUTED  # type: ignore[assignment]
-                app.cmd_exec = datetime.now(UTC)  # type: ignore[assignment]
-
-            if pending_apps:
-                session.commit()
+            # Leave cmd_flag as PENDING until the command is actually
+            # executed. mark_database_command_executed() is called by the
+            # Manager after execution so that a crash between poll and
+            # execution does not silently lose the command.
 
     def get_pending_commands(self) -> list[PendingCommand]:
         """Drain the command queue and return all pending commands.
@@ -167,22 +165,36 @@ class CommandHandler:
         *,
         executed: bool,
     ) -> None:
-        """Write an audit trail record to the command_log table.
+        """Write an audit trail record and update the source row.
+
+        For database-sourced commands, marks the Apps row as EXECUTED or
+        NOT_EXECUTED only after the command has actually been processed.
 
         Args:
             command: The command that was processed.
             executed: Whether the command was successfully executed.
         """
+        flag = CmdFlag.EXECUTED if executed else CmdFlag.NOT_EXECUTED
+
         with self._database.create_session() as session:
             record = CommandLog(
                 app_id=command.app_id,
                 cmd_by=command.issued_by,
                 cmd_name=command.command.name,
                 cmd_time=command.timestamp,
-                cmd_flag=CmdFlag.EXECUTED if executed else CmdFlag.NOT_EXECUTED,
+                cmd_flag=flag,
                 cmd_exec=datetime.now(UTC),
             )
             session.add(record)
+
+            # Mark the source Apps row only after actual execution
+            if command.source == "database":
+                statement = select(Apps).where(Apps.app == command.app_id)
+                row = self._database.query(statement, session).scalar_one_or_none()
+                if row is not None:
+                    row.cmd_flag = flag  # type: ignore[assignment]
+                    row.cmd_exec = datetime.now(UTC)  # type: ignore[assignment]
+
             session.commit()
 
     def _on_rabbitmq_message(self, message: CommandMessage) -> None:

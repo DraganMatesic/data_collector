@@ -113,8 +113,8 @@ class ProcessTracker:
 
         process = subprocess.Popen(
             command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
         tracked = TrackedProcess(
@@ -268,10 +268,7 @@ class ProcessTracker:
                 self._logger.warning(
                     "Invalid PID value '%s' for app %s, clearing", pid_str, app_id,
                 )
-                update_app_status(
-                    self._database, app_id,
-                    run_status=RunStatus.NOT_RUNNING, app_pids=None,
-                )
+                self._clear_orphan_state(app_id)
                 continue
 
             if self.is_pid_alive(pid):
@@ -281,11 +278,22 @@ class ProcessTracker:
                 )
                 self.kill_pid(pid)
 
-            update_app_status(
-                self._database, app_id,
-                run_status=RunStatus.NOT_RUNNING, app_pids=None,
-            )
+            self._clear_orphan_state(app_id)
             self._logger.info("Cleared orphan state for %s/%s/%s", app.group_name, app.parent_name, app.app_name)
+
+    def _clear_orphan_state(self, app_id: str) -> None:
+        """Reset run_status and explicitly NULL app_pids for an orphan app.
+
+        ``update_app_status`` skips ``None`` values, so ``app_pids`` must
+        be written directly via ORM to persist the NULL.
+        """
+        with self._database.create_session() as session:
+            statement = select(Apps).where(Apps.app == app_id)
+            row = self._database.query(statement, session).scalar_one_or_none()
+            if row is not None:
+                row.run_status = RunStatus.NOT_RUNNING  # type: ignore[assignment]
+                row.app_pids = None  # type: ignore[assignment]
+                session.commit()
 
     @property
     def active_count(self) -> int:
