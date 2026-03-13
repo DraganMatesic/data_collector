@@ -18,6 +18,7 @@ from data_collector.tables.captcha import (
     CodebookCaptchaErrorCategory,
     CodebookCaptchaSolveStatus,
 )
+from data_collector.tables.command_log import CommandLog
 from data_collector.tables.log import CodebookLogLevel, FunctionLog, FunctionLogError, Logs
 from data_collector.tables.notifications import CodebookAlertSeverity
 from data_collector.tables.proxy import ProxyBlacklist, ProxyReservation
@@ -34,6 +35,7 @@ __all__ = [
     "CaptchaLog",
     "CaptchaLogError",
     "CmdFlag",
+    "CommandLog",
     "CodebookCaptchaErrorCategory",
     "CodebookCaptchaSolveStatus",
     "CmdName",
