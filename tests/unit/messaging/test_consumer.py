@@ -18,10 +18,10 @@ from data_collector.settings.rabbitmq import RabbitMQSettings
 
 def _make_settings(**overrides: object) -> RabbitMQSettings:
     defaults: dict[str, object] = {
-        "rabbit_queue": "dc_test",
-        "rabbit_reconnect_base_delay": 0,
-        "rabbit_reconnect_max_delay": 0,
-        "rabbit_reconnect_max_attempts": 3,
+        "queue": "dc_test",
+        "reconnect_base_delay": 0,
+        "reconnect_max_delay": 0,
+        "reconnect_max_attempts": 3,
     }
     defaults.update(overrides)
     return RabbitMQSettings(**defaults)  # type: ignore[arg-type]

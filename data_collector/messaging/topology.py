@@ -65,7 +65,7 @@ def declare_topology(channel: pika.adapters.blocking_connection.BlockingChannel,
 
     Args:
         channel: Open pika channel.
-        queue_name: Per-manager queue name (from ``RabbitMQSettings.rabbit_queue``).
+        queue_name: Per-manager queue name (from ``RabbitMQSettings.queue``).
     """
     declare_exchange(channel)
     declare_queue_with_binding(channel, queue_name, queue_name)

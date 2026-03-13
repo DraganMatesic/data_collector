@@ -23,25 +23,25 @@ class RabbitMQSettings(BaseSettings):
         Direct construction (testing, overrides)::
 
             settings = RabbitMQSettings(
-                rabbit_host="rabbitmq.internal",
-                rabbit_port=5672,
-                rabbit_queue="dc_manager_eu",
+                host="rabbitmq.internal",
+                port=5672,
+                queue="dc_manager_eu",
             )
     """
 
     model_config = SettingsConfigDict(env_prefix="DC_RABBIT_")
 
     # -- Connection --
-    rabbit_host: str = "localhost"
-    rabbit_port: int = 5672
-    rabbit_username: str = "guest"
-    rabbit_password: str = "guest"
-    rabbit_queue: str = "dc_manager"
-    rabbit_prefetch: int = 1
+    host: str = "localhost"
+    port: int = 5672
+    username: str = "guest"
+    password: str = "guest"
+    queue: str = "dc_manager"
+    prefetch: int = 1
 
     # -- Reliability --
-    rabbit_heartbeat: int = 600
-    rabbit_connection_timeout: int = 10
-    rabbit_reconnect_max_attempts: int = 5
-    rabbit_reconnect_base_delay: int = 1
-    rabbit_reconnect_max_delay: int = 30
+    heartbeat: int = 600
+    connection_timeout: int = 10
+    reconnect_max_attempts: int = 5
+    reconnect_base_delay: int = 1
+    reconnect_max_delay: int = 30

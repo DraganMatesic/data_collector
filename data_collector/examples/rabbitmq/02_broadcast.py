@@ -95,8 +95,8 @@ def main() -> None:
             )
             beta_received_signal.set()
 
-        alpha_settings = RabbitMQSettings(rabbit_queue=manager_queue_alpha)
-        beta_settings = RabbitMQSettings(rabbit_queue=manager_queue_beta)
+        alpha_settings = RabbitMQSettings(queue=manager_queue_alpha)
+        beta_settings = RabbitMQSettings(queue=manager_queue_beta)
 
         alpha_consumer = CommandConsumer(alpha_connection, alpha_settings, handle_alpha_command)
         beta_consumer = CommandConsumer(beta_connection, beta_settings, handle_beta_command)

@@ -35,13 +35,13 @@ def main() -> None:
 
     print("=== RabbitMQ Connection Health Example ===\n")
     print("--- Configuration ---")
-    print(f"  Host: {settings.rabbit_host}:{settings.rabbit_port}")
-    print(f"  Queue: {settings.rabbit_queue}")
-    print(f"  Prefetch: {settings.rabbit_prefetch}")
-    print(f"  Heartbeat: {settings.rabbit_heartbeat}s")
-    print(f"  Reconnect: max {settings.rabbit_reconnect_max_attempts} attempts, "
-          f"base delay {settings.rabbit_reconnect_base_delay}s, "
-          f"max delay {settings.rabbit_reconnect_max_delay}s")
+    print(f"  Host: {settings.host}:{settings.port}")
+    print(f"  Queue: {settings.queue}")
+    print(f"  Prefetch: {settings.prefetch}")
+    print(f"  Heartbeat: {settings.heartbeat}s")
+    print(f"  Reconnect: max {settings.reconnect_max_attempts} attempts, "
+          f"base delay {settings.reconnect_base_delay}s, "
+          f"max delay {settings.reconnect_max_delay}s")
 
     connection = RabbitMQConnection(settings)
 
@@ -58,9 +58,9 @@ def main() -> None:
         # Step 3: Topology idempotency
         print("\n--- Step 3: Topology idempotency ---")
         channel = connection.ensure_connected()
-        declare_topology(channel, settings.rabbit_queue)
+        declare_topology(channel, settings.queue)
         print("  Topology declared (first call)")
-        declare_topology(channel, settings.rabbit_queue)
+        declare_topology(channel, settings.queue)
         print("  Topology declared (second call -- idempotent, no error)")
 
         # Step 4: Publish with explicit routing key
@@ -71,8 +71,8 @@ def main() -> None:
             issued_by="admin@example.com",
         )
         publisher = CommandPublisher(connection)
-        publisher.publish(enable_message, routing_key=settings.rabbit_queue)
-        print(f"  Published {enable_message.command.name} to routing_key='{settings.rabbit_queue}'")
+        publisher.publish(enable_message, routing_key=settings.queue)
+        print(f"  Published {enable_message.command.name} to routing_key='{settings.queue}'")
 
         # Step 5: Close and verify
         print("\n--- Step 5: Close connection ---")
@@ -91,8 +91,8 @@ def main() -> None:
             command=CmdName.DISABLE,
             issued_by="admin@example.com",
         )
-        publisher.publish(disable_message, routing_key=settings.rabbit_queue)
-        print(f"  Published {disable_message.command.name} to routing_key='{settings.rabbit_queue}'")
+        publisher.publish(disable_message, routing_key=settings.queue)
+        print(f"  Published {disable_message.command.name} to routing_key='{settings.queue}'")
 
         print("\nAll health check scenarios passed.")
 
