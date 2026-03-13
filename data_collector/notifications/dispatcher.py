@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
+from types import MappingProxyType
 
 from data_collector.enums.notifications import AlertSeverity
 from data_collector.notifications.discord import DiscordNotifier
@@ -19,13 +21,13 @@ from data_collector.settings.notification import NotificationSettings
 
 logger = logging.getLogger(__name__)
 
-CHANNEL_REGISTRY: dict[str, type[BaseNotifier]] = {
+CHANNEL_REGISTRY: MappingProxyType[str, type[BaseNotifier]] = MappingProxyType({
     TelegramNotifier.CHANNEL_NAME: TelegramNotifier,
     SlackNotifier.CHANNEL_NAME: SlackNotifier,
     EmailNotifier.CHANNEL_NAME: EmailNotifier,
     DiscordNotifier.CHANNEL_NAME: DiscordNotifier,
     WebhookNotifier.CHANNEL_NAME: WebhookNotifier,
-}
+})
 
 
 def _build_notifier(channel_name: str, settings: NotificationSettings) -> BaseNotifier | None:
@@ -113,6 +115,7 @@ class NotificationDispatcher:
         }
         self._consecutive_failures: dict[str, int] = {notifier.channel_name: 0 for notifier in notifiers}
         self._disabled_channels: set[str] = set()
+        self._lock = threading.Lock()
 
     @classmethod
     def from_settings(cls, settings: NotificationSettings) -> NotificationDispatcher:
@@ -172,37 +175,41 @@ class NotificationDispatcher:
         results: list[DeliveryResult] = []
 
         for channel_name, notifier in self._notifiers.items():
-            if channel_name in self._disabled_channels:
-                logger.debug("Channel '%s' is temporarily disabled, skipping", channel_name)
-                continue
+            with self._lock:
+                if channel_name in self._disabled_channels:
+                    logger.debug("Channel '%s' is temporarily disabled, skipping", channel_name)
+                    continue
 
-            rate_limiter = self._rate_limiters.get(channel_name)
-            if rate_limiter and not rate_limiter.is_allowed(notification.severity):
-                logger.debug("Channel '%s' is rate-limited, skipping", channel_name)
-                results.append(DeliveryResult(
-                    channel_name=channel_name,
-                    success=False,
-                    attempts=0,
-                    error_message="Rate limited",
-                ))
-                continue
+                rate_limiter = self._rate_limiters.get(channel_name)
+                if rate_limiter and not rate_limiter.is_allowed(notification.severity):
+                    logger.debug("Channel '%s' is rate-limited, skipping", channel_name)
+                    results.append(DeliveryResult(
+                        channel_name=channel_name,
+                        success=False,
+                        attempts=0,
+                        error_message="Rate limited",
+                    ))
+                    continue
 
             result = self._deliver_with_retry(notifier, notification)
             results.append(result)
 
-            if result.success:
-                self._consecutive_failures[channel_name] = 0
-                if rate_limiter:
-                    rate_limiter.record_send()
-            else:
-                self._consecutive_failures[channel_name] = self._consecutive_failures.get(channel_name, 0) + 1
-                if self._consecutive_failures[channel_name] >= self._max_consecutive_failures:
-                    self._disabled_channels.add(channel_name)
-                    logger.error(
-                        "Channel '%s' disabled after %d consecutive failures",
-                        channel_name,
-                        self._max_consecutive_failures,
+            with self._lock:
+                if result.success:
+                    self._consecutive_failures[channel_name] = 0
+                    if rate_limiter:
+                        rate_limiter.record_send()
+                else:
+                    self._consecutive_failures[channel_name] = (
+                        self._consecutive_failures.get(channel_name, 0) + 1
                     )
+                    if self._consecutive_failures[channel_name] >= self._max_consecutive_failures:
+                        self._disabled_channels.add(channel_name)
+                        logger.error(
+                            "Channel '%s' disabled after %d consecutive failures",
+                            channel_name,
+                            self._max_consecutive_failures,
+                        )
 
         return results
 
@@ -303,6 +310,7 @@ class NotificationDispatcher:
         """
         if channel_name not in self._notifiers:
             raise ValueError(f"Unknown channel: {channel_name}")
-        self._disabled_channels.discard(channel_name)
-        self._consecutive_failures[channel_name] = 0
+        with self._lock:
+            self._disabled_channels.discard(channel_name)
+            self._consecutive_failures[channel_name] = 0
         logger.info("Channel '%s' re-enabled", channel_name)

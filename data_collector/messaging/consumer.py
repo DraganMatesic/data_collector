@@ -130,6 +130,7 @@ class CommandConsumer:
                     queue_name,
                     broadcast_queue_name,
                 )
+                base_delay = self._settings.reconnect_base_delay
                 channel.start_consuming()
 
             except pika.exceptions.AMQPError as error:

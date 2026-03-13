@@ -8,8 +8,8 @@ _SENTINEL = object()
 
 
 def ns_to_sec(nanoseconds: int | float) -> float:
-    """Converts nanoseconds to seconds"""
-    return nanoseconds / 1000000
+    """Converts nanoseconds to seconds."""
+    return nanoseconds / 1_000_000_000
 
 
 def sec_to_min(seconds: int | float, round_to: int = 0) -> int | float:

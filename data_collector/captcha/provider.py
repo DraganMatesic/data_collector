@@ -16,6 +16,8 @@ import urllib.parse
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
+from sqlalchemy import update
+
 from data_collector.captcha.metrics import CaptchaMetrics
 from data_collector.captcha.models import CaptchaError, CaptchaResult, CaptchaTaskType, CaptchaTimeout
 from data_collector.enums.captcha import CaptchaErrorCategory, CaptchaSolveStatus
@@ -458,7 +460,6 @@ class BaseCaptchaProvider(ABC):
 
         try:
             assert self._database is not None  # noqa: S101 -- guarded by _log_enabled
-            from sqlalchemy import update
 
             statement = (
                 update(CaptchaLog)
