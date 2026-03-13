@@ -19,6 +19,7 @@ def _make_pending(
     issued_by: str = "test_user",
     source: str = "database",
     source_cmd_time: datetime | None = None,
+    source_cmd_name: str | None = None,
 ) -> PendingCommand:
     timestamp = source_cmd_time if source_cmd_time is not None else datetime.now(UTC)
     return PendingCommand(
@@ -28,6 +29,7 @@ def _make_pending(
         timestamp=timestamp,
         source=source,
         source_cmd_time=source_cmd_time,
+        source_cmd_name=source_cmd_name,
     )
 
 
@@ -58,6 +60,7 @@ class TestPollDatabaseCommands:
         assert commands[0].app_id == "test_hash"
         assert commands[0].command == CmdName.START
         assert commands[0].source == "database"
+        assert commands[0].source_cmd_name == str(mock_app.cmd_name)
 
     def test_marks_invalid_command_not_executed(self) -> None:
         mock_database = MagicMock()
@@ -190,12 +193,35 @@ class TestLogCommand:
 
         handler = CommandHandler(mock_database, logger=MagicMock())
         # source_cmd_time=None simulates a DB row with NULL cmd_time
-        command = _make_pending(source="database", source_cmd_time=None)
+        command = _make_pending(source="database", source_cmd_time=None, source_cmd_name="START")
 
         handler.log_command(command, executed=True)
 
         # The Apps row should be updated despite NULL cmd_time
         assert mock_row.cmd_flag == CmdFlag.EXECUTED
+        mock_session.commit.assert_called_once()
+
+    def test_log_command_null_time_guards_on_cmd_name(self) -> None:
+        """NULL cmd_time + different cmd_name must not match newer command."""
+        mock_database = MagicMock()
+        mock_session = MagicMock()
+        mock_database.create_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_database.create_session.return_value.__exit__ = MagicMock(return_value=False)
+        # Simulate no match: cmd_name changed since poll
+        mock_database.query.return_value.scalar_one_or_none.return_value = None
+
+        handler = CommandHandler(mock_database, logger=MagicMock())
+        command = _make_pending(
+            source="database",
+            command=CmdName.START,
+            source_cmd_time=None,
+            source_cmd_name="START",
+        )
+
+        handler.log_command(command, executed=True)
+
+        # Audit record written, but Apps row not mutated (no match)
+        mock_session.add.assert_called_once()
         mock_session.commit.assert_called_once()
 
 
