@@ -760,12 +760,19 @@ class Database:
         else:
             return "unknown"
 
+    _VALID_SCHEMA_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
     def ensure_schema(self, schema_name: str) -> None:
         """Create a database schema if it does not already exist.
 
         Args:
             schema_name: Name of the schema to create.
+
+        Raises:
+            ValueError: If the schema name contains invalid characters.
         """
+        if not self._VALID_SCHEMA_NAME.match(schema_name):
+            raise ValueError(f"Invalid schema name: {schema_name!r}")
         with self.engine.connect() as conn:
             if self.settings.database_type == DatabaseType.POSTGRES:
                 conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}"))
@@ -831,7 +838,7 @@ class Database:
                         dependencies_hash.append(record_hash)
 
                 except Exception as e:
-                    self.logger.error(f"[register_models] Failed to register {db_object.__name__}: {e}")
+                    self.logger.error("[register_models] Failed to register %s: %s", db_object.__name__, e)
 
             if dependencies:
                 filters = and_(AppDbObjects.app_id == self.app_id)
@@ -873,7 +880,7 @@ class Database:
                         dependencies.append(AppDbObjects(**record_data))
                         dependencies_hash.append(record_hash)
                 except Exception as e:
-                    self.logger.error(f"[register_sql_objects] Failed to register {obj}: {e}")
+                    self.logger.error("[register_sql_objects] Failed to register %s: %s", obj, e)
 
             if dependencies:
                 filters = and_(AppDbObjects.app_id == self.app_id)

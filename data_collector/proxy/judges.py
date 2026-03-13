@@ -7,11 +7,11 @@ from data_collector.utilities.request import Request
 
 logger = logging.getLogger(__name__)
 
-PROXY_JUDGES: list[str] = [
+PROXY_JUDGES: tuple[str, ...] = (
     "https://httpbin.org/ip",
     "https://api.ipify.org?format=json",
     "https://ifconfig.me/ip",
-]
+)
 
 _IPV4_PATTERN = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
 
@@ -46,7 +46,7 @@ def extract_ip(content: bytes) -> str | None:
     return None
 
 
-def verify_ip(proxy_url: str, judges: list[str]) -> str | None:
+def verify_ip(proxy_url: str, judges: list[str] | tuple[str, ...]) -> str | None:
     """Verify the IP address assigned by a proxy provider via judge endpoints.
 
     Iterates through proxy judge URLs with failover. Each judge is queried
