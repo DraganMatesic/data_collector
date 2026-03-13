@@ -126,6 +126,10 @@ class Apps(Base):
     # Scheduling fields
     last_run = Column(DateTime, comment="Timestamp of last app run")
     next_run = Column(DateTime, comment="Timestamp of next app run")
+    interval = Column(Integer, comment="Run interval in minutes. NULL = cron-based or manual-only")
+    cron_expression = Column(
+        String(128), comment="Cron expression for scheduling. NULL = interval-based or manual-only",
+    )
 
     # Runtime data
     app_pids = Column(Text, comment="List of process IDs connected to app")
@@ -178,6 +182,14 @@ class Apps(Base):
 
     # Disable flag (default: true = disabled)
     disable = Column(Boolean, server_default=text("true"), comment="disable flag for app (default: true = disabled)")
+
+    # Managed flag (default: false = not managed by orchestration Manager)
+    managed = Column(
+        Boolean, server_default=text("false"), comment="Whether app is managed by the orchestration Manager",
+    )
+
+    # Scheduled removal
+    removal_date = Column(DateTime, comment="Scheduled removal date. Retention cleaner deletes app after this date")
 
     # Composite foreign key ensures group/parent match in AppParents
     # Composite primary key ensures group/parent/app are unique

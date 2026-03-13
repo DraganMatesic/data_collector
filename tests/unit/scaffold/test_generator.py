@@ -7,7 +7,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from data_collector.scaffold.generator import scaffold_app, to_class_name
+from data_collector.enums import FatalFlag, RunStatus
+from data_collector.scaffold.generator import (
+    disable_app,
+    enable_app,
+    remove_app,
+    scaffold_app,
+    to_class_name,
+    unmanage_app,
+)
 
 _MODULE = "data_collector.scaffold.generator"
 
@@ -199,3 +207,139 @@ class TestScaffoldApp:
         assert "class HelloWorld(ThreadedScraper)" in main_content
         assert "process_batch" in main_content
         assert "create_worker_request" in main_content
+
+
+def _make_mock_database(mock_app: MagicMock | None) -> MagicMock:
+    """Build a mock Database whose session context manager and query chain return ``mock_app``."""
+    mock_database = MagicMock()
+    mock_session = MagicMock()
+    mock_database.create_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_database.create_session.return_value.__exit__ = MagicMock(return_value=False)
+    mock_database.query.return_value.scalar_one_or_none.return_value = mock_app
+    return mock_database
+
+
+class TestEnableApp:
+    """Tests for enable_app lifecycle function."""
+
+    @patch(f"{_MODULE}.MainDatabaseSettings")
+    @patch(f"{_MODULE}.Database")
+    def test_enable_app_sets_disable_false(
+        self,
+        mock_database_class: MagicMock,
+        mock_settings_class: MagicMock,
+    ) -> None:
+        mock_app = MagicMock()
+        mock_app.managed = True
+        mock_database = _make_mock_database(mock_app)
+        mock_database_class.return_value = mock_database
+
+        enable_app("test", "demo", "hello")
+
+        assert mock_app.disable is False
+        assert mock_app.fatal_flag == FatalFlag.NONE
+        assert mock_app.fatal_msg is None
+        assert mock_app.fatal_time is None
+        mock_database.create_session.return_value.__enter__.return_value.commit.assert_called_once()
+
+    @patch(f"{_MODULE}.MainDatabaseSettings")
+    @patch(f"{_MODULE}.Database")
+    def test_enable_app_refuses_unmanaged(
+        self,
+        mock_database_class: MagicMock,
+        mock_settings_class: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        mock_app = MagicMock()
+        mock_app.managed = False
+        mock_database = _make_mock_database(mock_app)
+        mock_database_class.return_value = mock_database
+
+        enable_app("test", "demo", "hello")
+
+        captured = capsys.readouterr()
+        assert "is not managed" in captured.err
+        mock_database.create_session.return_value.__enter__.return_value.commit.assert_not_called()
+
+
+class TestDisableApp:
+    """Tests for disable_app lifecycle function."""
+
+    @patch(f"{_MODULE}.MainDatabaseSettings")
+    @patch(f"{_MODULE}.Database")
+    def test_disable_app_sets_disable_true(
+        self,
+        mock_database_class: MagicMock,
+        mock_settings_class: MagicMock,
+    ) -> None:
+        mock_app = MagicMock()
+        mock_database = _make_mock_database(mock_app)
+        mock_database_class.return_value = mock_database
+
+        disable_app("test", "demo", "hello")
+
+        assert mock_app.disable is True
+        mock_database.create_session.return_value.__enter__.return_value.commit.assert_called_once()
+
+
+class TestUnmanageApp:
+    """Tests for unmanage_app lifecycle function."""
+
+    @patch(f"{_MODULE}.MainDatabaseSettings")
+    @patch(f"{_MODULE}.Database")
+    def test_unmanage_app_sets_managed_false(
+        self,
+        mock_database_class: MagicMock,
+        mock_settings_class: MagicMock,
+    ) -> None:
+        mock_app = MagicMock()
+        mock_database = _make_mock_database(mock_app)
+        mock_database_class.return_value = mock_database
+
+        unmanage_app("test", "demo", "hello")
+
+        assert mock_app.managed is False
+        assert mock_app.disable is True
+        mock_database.create_session.return_value.__enter__.return_value.commit.assert_called_once()
+
+
+class TestRemoveApp:
+    """Tests for remove_app lifecycle function."""
+
+    @patch(f"{_MODULE}.MainDatabaseSettings")
+    @patch(f"{_MODULE}.Database")
+    def test_remove_app_sets_removal_date(
+        self,
+        mock_database_class: MagicMock,
+        mock_settings_class: MagicMock,
+    ) -> None:
+        mock_app = MagicMock()
+        mock_app.run_status = RunStatus.NOT_RUNNING
+        mock_database = _make_mock_database(mock_app)
+        mock_database_class.return_value = mock_database
+
+        remove_app("test", "demo", "hello", grace_days=7)
+
+        assert mock_app.removal_date is not None
+        assert mock_app.managed is False
+        assert mock_app.disable is True
+        mock_database.create_session.return_value.__enter__.return_value.commit.assert_called_once()
+
+    @patch(f"{_MODULE}.MainDatabaseSettings")
+    @patch(f"{_MODULE}.Database")
+    def test_remove_app_refuses_running(
+        self,
+        mock_database_class: MagicMock,
+        mock_settings_class: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        mock_app = MagicMock()
+        mock_app.run_status = RunStatus.RUNNING
+        mock_database = _make_mock_database(mock_app)
+        mock_database_class.return_value = mock_database
+
+        remove_app("test", "demo", "hello")
+
+        captured = capsys.readouterr()
+        assert "currently running" in captured.err
+        mock_database.create_session.return_value.__enter__.return_value.commit.assert_not_called()

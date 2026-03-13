@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from sqlalchemy import select
 
 from data_collector.enums import FatalFlag, RunStatus
 from data_collector.scaffold.templates import (
@@ -95,6 +98,7 @@ def _register_app_in_db(
                     run_status=RunStatus.NOT_RUNNING,
                     fatal_flag=FatalFlag.NONE,
                     disable=True,
+                    managed=True,
                 ),
                 session,
                 filter_cols=["group_name", "parent_name", "app_name"],
@@ -194,3 +198,162 @@ def scaffold_app(
     print("  2. Edit parser.py -- implement Parser class methods")
     print("  3. Edit main.py -- set base_url, implement collect() logic")
     print(f"  4. Run: python -m data_collector.{group}.{parent}.{name}.main")
+
+
+def _connect_database() -> Database | None:
+    """Connect to the main database. Returns None on failure."""
+    try:
+        return Database(MainDatabaseSettings())
+    except Exception:
+        logger.warning("Could not connect to database.")
+        print("Error: Could not connect to database.", file=sys.stderr)
+        return None
+
+
+def enable_app(group: str, parent: str, name: str) -> None:
+    """Enable a managed app for scheduling.
+
+    Sets ``disable=False`` and clears ``fatal_flag``. Only works on
+    apps with ``managed=True``.
+
+    Args:
+        group: App group name.
+        parent: Parent domain name.
+        name: Application name.
+    """
+    app_id = get_app_id(group, parent, name)
+    database = _connect_database()
+    if database is None:
+        return
+
+    with database.create_session() as session:
+        statement = select(Apps).where(Apps.app == app_id)
+        app = database.query(statement, session).scalar_one_or_none()
+        if app is None:
+            print(f"Error: App not found: {group}/{parent}/{name}", file=sys.stderr)
+            return
+        if not app.managed:
+            print(
+                f"Error: App {group}/{parent}/{name} is not managed. "
+                "Use scaffold create to register a managed app.",
+                file=sys.stderr,
+            )
+            return
+        app.disable = False  # type: ignore[assignment]
+        app.fatal_flag = FatalFlag.NONE  # type: ignore[assignment]
+        app.fatal_msg = None  # type: ignore[assignment]
+        app.fatal_time = None  # type: ignore[assignment]
+        session.commit()
+
+    print(f"App enabled: {group}/{parent}/{name}")
+    print(f"  app_id:  {app_id}")
+    print("  disable: False")
+    print("  fatal:   NONE")
+
+
+def disable_app(group: str, parent: str, name: str) -> None:
+    """Disable an app to prevent scheduling.
+
+    Sets ``disable=True``. The app remains registered and managed.
+
+    Args:
+        group: App group name.
+        parent: Parent domain name.
+        name: Application name.
+    """
+    app_id = get_app_id(group, parent, name)
+    database = _connect_database()
+    if database is None:
+        return
+
+    with database.create_session() as session:
+        statement = select(Apps).where(Apps.app == app_id)
+        app = database.query(statement, session).scalar_one_or_none()
+        if app is None:
+            print(f"Error: App not found: {group}/{parent}/{name}", file=sys.stderr)
+            return
+        app.disable = True  # type: ignore[assignment]
+        session.commit()
+
+    print(f"App disabled: {group}/{parent}/{name}")
+    print(f"  app_id:  {app_id}")
+    print("  disable: True")
+
+
+def unmanage_app(group: str, parent: str, name: str) -> None:
+    """Remove an app from Manager oversight.
+
+    Sets ``managed=False`` and ``disable=True``. The app remains in the
+    database but is invisible to the orchestration Manager.
+
+    Args:
+        group: App group name.
+        parent: Parent domain name.
+        name: Application name.
+    """
+    app_id = get_app_id(group, parent, name)
+    database = _connect_database()
+    if database is None:
+        return
+
+    with database.create_session() as session:
+        statement = select(Apps).where(Apps.app == app_id)
+        app = database.query(statement, session).scalar_one_or_none()
+        if app is None:
+            print(f"Error: App not found: {group}/{parent}/{name}", file=sys.stderr)
+            return
+        app.managed = False  # type: ignore[assignment]
+        app.disable = True  # type: ignore[assignment]
+        session.commit()
+
+    print(f"App unmanaged: {group}/{parent}/{name}")
+    print(f"  app_id:  {app_id}")
+    print("  managed: False")
+    print("  disable: True")
+
+
+def remove_app(group: str, parent: str, name: str, *, grace_days: int = 30) -> None:
+    """Mark an app for removal after a grace period.
+
+    Sets ``removal_date`` to ``now + grace_days``, ``managed=False``, and
+    ``disable=True``. The retention cleaner will delete the app directory
+    and database rows after ``removal_date`` passes.
+
+    Refuses if the app is currently running.
+
+    Args:
+        group: App group name.
+        parent: Parent domain name.
+        name: Application name.
+        grace_days: Number of days before permanent removal (default 30).
+    """
+    app_id = get_app_id(group, parent, name)
+    database = _connect_database()
+    if database is None:
+        return
+
+    with database.create_session() as session:
+        statement = select(Apps).where(Apps.app == app_id)
+        app = database.query(statement, session).scalar_one_or_none()
+        if app is None:
+            print(f"Error: App not found: {group}/{parent}/{name}", file=sys.stderr)
+            return
+        if app.run_status == RunStatus.RUNNING:
+            print(
+                f"Error: App {group}/{parent}/{name} is currently running. "
+                "Disable the app first before marking it for removal.",
+                file=sys.stderr,
+            )
+            return
+        scheduled_removal = datetime.now(UTC) + timedelta(days=grace_days)
+        app.removal_date = scheduled_removal  # type: ignore[assignment]
+        app.managed = False  # type: ignore[assignment]
+        app.disable = True  # type: ignore[assignment]
+        session.commit()
+
+    print(f"App marked for removal: {group}/{parent}/{name}")
+    print(f"  app_id:       {app_id}")
+    print(f"  removal_date: {scheduled_removal.strftime('%Y-%m-%d')}")
+    print(f"  grace_days:   {grace_days}")
+    print("  managed:      False")
+    print("  disable:      True")
