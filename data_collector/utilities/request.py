@@ -10,10 +10,8 @@ Classes:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import random
-import re
 import threading
 import time
 from datetime import datetime
@@ -28,9 +26,8 @@ import zeep
 from zeep.exceptions import Fault, TransportError
 from zeep.transports import Transport
 
-# ---------------------------------------------------------------------------
-# RequestErrorType
-# ---------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
+
 
 class RequestErrorType(StrEnum):
     """Error type classification for HTTP request failures."""
@@ -43,10 +40,6 @@ class RequestErrorType(StrEnum):
     OTHER = "other"
 
 
-# ---------------------------------------------------------------------------
-# Internal TypedDicts for structured metrics data
-# ---------------------------------------------------------------------------
-
 class _ProxyStats(TypedDict):
     count: int
     success: int
@@ -57,10 +50,6 @@ class _TargetFailure(TypedDict):
     failures: int
     proxies: set[str]
 
-
-# ---------------------------------------------------------------------------
-# ExceptionDescriptor
-# ---------------------------------------------------------------------------
 
 class ExceptionDescriptor:
     """Tracks errors with timestamps for time-based analysis."""
@@ -92,10 +81,6 @@ class ExceptionDescriptor:
         """Remove all recorded errors."""
         self.errors.clear()
 
-
-# ---------------------------------------------------------------------------
-# RequestMetrics
-# ---------------------------------------------------------------------------
 
 class RequestMetrics:
     """Thread-safe shared metrics collector for multi-threaded HTTP operations.
@@ -306,14 +291,6 @@ class RequestMetrics:
         return round(sorted_data[idx])
 
 
-# ---------------------------------------------------------------------------
-# Request
-# ---------------------------------------------------------------------------
-
-# Status codes that should not be retried
-_NO_RETRY_STATUSES = {401, 403, 404}
-
-
 class Request:
     """httpx-based sync + async HTTP client with retry logic and error tracking.
 
@@ -326,6 +303,15 @@ class Request:
         save_dir: Directory for saved responses.
         metrics: Shared RequestMetrics collector for multi-threaded aggregation.
     """
+
+    _REQUEST_ERROR_TO_CATEGORY: dict[str, str] = {
+        RequestErrorType.TIMEOUT: "http",
+        RequestErrorType.PROXY: "proxy",
+        RequestErrorType.BAD_STATUS: "http",
+        RequestErrorType.REDIRECT: "http",
+        RequestErrorType.REQUEST: "http",
+        RequestErrorType.OTHER: "unknown",
+    }
 
     def __init__(
         self,
@@ -378,7 +364,11 @@ class Request:
         # SOAP client reference
         self._soap_client: Any = None
 
-    # --- Setter methods ---
+        # Blocked status codes for is_blocked() detection
+        self._blocked_statuses: set[int] = {401, 403, 429}
+
+        # Status codes that should not be retried (immediate return)
+        self._no_retry_statuses: set[int] = {401, 403, 404}
 
     def set_headers(self, headers: dict[str, str]) -> None:
         """Set default headers for all requests."""
@@ -415,6 +405,30 @@ class Request:
         self._proxy = proxy_config
         self._invalidate_clients()
 
+    def set_blocked_statuses(self, statuses: set[int], *, append: bool = False) -> None:
+        """Configure which HTTP status codes are treated as IP blocks by is_blocked().
+
+        Args:
+            statuses: Set of HTTP status codes to treat as blocked.
+            append: If True, add to the existing set. If False, replace it.
+        """
+        if append:
+            self._blocked_statuses |= statuses
+        else:
+            self._blocked_statuses = set(statuses)
+
+    def set_no_retry_statuses(self, statuses: set[int], *, append: bool = False) -> None:
+        """Configure which HTTP status codes skip retry and return immediately.
+
+        Args:
+            statuses: Set of HTTP status codes that should not be retried.
+            append: If True, add to the existing set. If False, replace it.
+        """
+        if append:
+            self._no_retry_statuses |= statuses
+        else:
+            self._no_retry_statuses = set(statuses)
+
     def close(self) -> None:
         """Close reusable httpx clients and release connections."""
         self._invalidate_clients()
@@ -437,9 +451,10 @@ class Request:
             loop = asyncio.get_running_loop()
             loop.create_task(client.aclose())
         except RuntimeError:
-            # No running loop — safe to create a temporary one.
-            with contextlib.suppress(RuntimeError):
+            try:
                 asyncio.run(client.aclose())
+            except RuntimeError:
+                logger.debug("Could not close async HTTP client — no event loop available")
 
     def _get_client(self) -> httpx.Client:
         """Return a reusable sync httpx.Client, creating one if needed."""
@@ -467,8 +482,6 @@ class Request:
             self._client_kwargs_snapshot = kwargs
         return self._async_client
 
-    # --- HTTP methods ---
-
     def get(self, url: str, **kwargs: Any) -> httpx.Response | None:
         """Synchronous GET request."""
         return self._make_request("GET", url, **kwargs)
@@ -485,7 +498,9 @@ class Request:
         """Asynchronous POST request."""
         return await self._async_make_request("POST", url, **kwargs)
 
-    # --- Internal request engine ---
+    def _backoff_delay(self, attempt: int) -> float:
+        """Compute exponential backoff with full jitter for the given attempt."""
+        return random.uniform(0, self._backoff_factor ** attempt)
 
     def _build_client_kwargs(self) -> dict[str, Any]:
         """Build kwargs for httpx.Client / httpx.AsyncClient."""
@@ -533,13 +548,13 @@ class Request:
                     return self.response
 
                 # No retry for certain status codes
-                if status in _NO_RETRY_STATUSES:
+                if status in self._no_retry_statuses:
                     self._record_error(RequestErrorType.BAD_STATUS, f"HTTP {status}", url)
                     return self.response
 
                 # Retryable status
                 if status in self._retry_on_status and attempt < self._retries:
-                    time.sleep(self._backoff_factor ** attempt)
+                    time.sleep(self._backoff_delay(attempt))
                     continue
 
                 # Non-retryable non-2xx
@@ -549,12 +564,12 @@ class Request:
             except Exception as exc:
                 self.request_count += 1
                 error_type, retryable = self._classify_exception(exc)
-                self._record_error(error_type, str(exc), url)
                 if self._metrics:
                     self._metrics.record_error(domain, proxy_key, error_type)
                 if retryable and attempt < self._retries:
-                    time.sleep(self._backoff_factor ** attempt)
+                    time.sleep(self._backoff_delay(attempt))
                     continue
+                self._record_error(error_type, str(exc), url)
                 return None
 
         return self.response
@@ -587,12 +602,12 @@ class Request:
                         self._auto_save_response(url)
                     return self.response
 
-                if status in _NO_RETRY_STATUSES:
+                if status in self._no_retry_statuses:
                     self._record_error(RequestErrorType.BAD_STATUS, f"HTTP {status}", url)
                     return self.response
 
                 if status in self._retry_on_status and attempt < self._retries:
-                    await asyncio.sleep(self._backoff_factor ** attempt)
+                    await asyncio.sleep(self._backoff_delay(attempt))
                     continue
 
                 self._record_error(RequestErrorType.BAD_STATUS, f"HTTP {status}", url)
@@ -601,12 +616,12 @@ class Request:
             except Exception as exc:
                 self.request_count += 1
                 error_type, retryable = self._classify_exception(exc)
-                self._record_error(error_type, str(exc), url)
                 if self._metrics:
                     self._metrics.record_error(domain, proxy_key, error_type)
                 if retryable and attempt < self._retries:
-                    await asyncio.sleep(self._backoff_factor ** attempt)
+                    await asyncio.sleep(self._backoff_delay(attempt))
                     continue
+                self._record_error(error_type, str(exc), url)
                 return None
 
         return self.response
@@ -639,22 +654,34 @@ class Request:
             return "unknown"
 
     def _classify_exception(self, exc: Exception) -> tuple[RequestErrorType, bool]:
-        """Classify an exception into (error_type, is_retryable).
+        """Classify an httpx exception into (error_type, is_retryable).
+
+        Covers the full httpx exception hierarchy (most-specific first):
+
+            TimeoutException (ConnectTimeout, ReadTimeout, WriteTimeout, PoolTimeout)
+                -> TIMEOUT, retryable
+            ProxyError, ConnectError -> PROXY, retryable
+            ReadError, WriteError, RemoteProtocolError -> REQUEST, retryable
+                (transient network I/O or server-side protocol glitch)
+            TooManyRedirects -> REDIRECT, not retryable
+            HTTPError catch-all (CloseError, LocalProtocolError, UnsupportedProtocol,
+                DecodingError, HTTPStatusError) -> REQUEST, not retryable
+            Non-httpx -> OTHER, not retryable
 
         Returns:
             Tuple of (error_type constant, whether the error is retryable).
         """
         if isinstance(exc, httpx.TimeoutException):
             return RequestErrorType.TIMEOUT, True
-        if isinstance(exc, (httpx.ConnectError, httpx.ProxyError)):
+        if isinstance(exc, (httpx.ProxyError, httpx.ConnectError)):
             return RequestErrorType.PROXY, True
+        if isinstance(exc, (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError)):
+            return RequestErrorType.REQUEST, True
         if isinstance(exc, httpx.TooManyRedirects):
             return RequestErrorType.REDIRECT, False
         if isinstance(exc, httpx.HTTPError):
             return RequestErrorType.REQUEST, False
         return RequestErrorType.OTHER, False
-
-    # --- Error introspection ---
 
     def has_errors(self) -> bool:
         """True if any error occurred after the last request timestamp."""
@@ -663,15 +690,13 @@ class Request:
         return self.exception_descriptor.has_errors_after(self._last_request_time)
 
     def is_blocked(self) -> bool:
-        """True if the last error indicates IP block (401/403/429 or forcibly closed)."""
+        """True if the last error indicates IP block or forcibly closed connection."""
         last = self.exception_descriptor.get_last_error()
         if last is None:
             return False
-        msg = last.get("message", "").lower()
-        return (
-            "401" in msg or "403" in msg or "429" in msg
-            or "forcibly closed" in msg
-        )
+        if self.response is not None and self.response.status_code in self._blocked_statuses:
+            return True
+        return "forcibly closed" in last.get("message", "").lower()
 
     def is_proxy_error(self) -> bool:
         """True if the last error is a proxy/connection/SSL error."""
@@ -687,17 +712,12 @@ class Request:
             return False
         return last.get("type") == RequestErrorType.TIMEOUT
 
-    _SERVER_ERROR_PATTERN = re.compile(r"\b5\d{2}\b")
-
     def is_server_down(self) -> bool:
         """True if the last error indicates a 5xx server error."""
         last = self.exception_descriptor.get_last_error()
         if last is None:
             return False
-        msg = last.get("message", "")
-        return self._SERVER_ERROR_PATTERN.search(msg) is not None
-
-    # --- Abort decision ---
+        return self.response is not None and 500 <= self.response.status_code < 600
 
     def should_abort(self, logger: logging.Logger, proxy_on: bool = False) -> bool:
         """Returns True if a critical error occurred and the caller should stop.
@@ -725,17 +745,6 @@ class Request:
         logger.error(str(last))
         return True
 
-    # --- Error category mapping ---
-
-    _REQUEST_ERROR_TO_CATEGORY: dict[str, str] = {
-        RequestErrorType.TIMEOUT: "http",
-        RequestErrorType.PROXY: "proxy",
-        RequestErrorType.BAD_STATUS: "http",
-        RequestErrorType.REDIRECT: "http",
-        RequestErrorType.REQUEST: "http",
-        RequestErrorType.OTHER: "unknown",
-    }
-
     def get_error_category(self) -> str | None:
         """Map the last recorded error to an ErrorCategory value string.
 
@@ -753,15 +762,11 @@ class Request:
         error_type = last.get("type", "")
         return self._REQUEST_ERROR_TO_CATEGORY.get(error_type, "unknown")
 
-    # --- Circuit breaker delegation ---
-
     def is_target_unhealthy(self, url: str) -> bool:
         """Delegates to metrics.is_target_unhealthy() or returns False."""
         if self._metrics is None:
             return False
         return self._metrics.is_target_unhealthy(url)
-
-    # --- Response helpers ---
 
     def save_html(self, save_path: str) -> None:
         """Save response content to file (binary write)."""
@@ -797,8 +802,6 @@ class Request:
         except Exception as exc:
             return str(exc)
 
-    # --- Statistics ---
-
     def log_stats(self, logger: logging.Logger) -> dict[str, Any]:
         """Log and return statistics.
 
@@ -829,8 +832,6 @@ class Request:
         logger.info("Request statistics: %s", stats)
         return stats
 
-    # --- Response saving ---
-
     def _auto_save_response(self, url: str) -> None:
         """Auto-save response when save_responses is enabled."""
         if not self._save_dir or self.response is None:
@@ -842,14 +843,12 @@ class Request:
         parsed = urlparse(url)
         domain = parsed.netloc.replace(":", "_")
         path_part = parsed.path.strip("/").replace("/", "_") or "index"
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
         filename = f"{timestamp}_{domain}_{path_part}{ext}"
 
         save_dir = Path(self._save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         (save_dir / filename).write_bytes(self.response.content)
-
-    # --- SOAP ---
 
     def create_soap_client(self, wsdl_url: str, **kwargs: Any) -> Any:
         """Create a Zeep SOAP client wired through this Request's session.
