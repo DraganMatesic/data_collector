@@ -10,6 +10,7 @@ Classes:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import random
 import re
@@ -371,6 +372,7 @@ class Request:
         # Reusable httpx clients (created lazily, invalidated on config change)
         self._client: httpx.Client | None = None
         self._async_client: httpx.AsyncClient | None = None
+        self._async_client_loop: asyncio.AbstractEventLoop | None = None
         self._client_kwargs_snapshot: dict[str, Any] | None = None
 
         # SOAP client reference
@@ -423,13 +425,21 @@ class Request:
             self._client.close()
             self._client = None
         if self._async_client is not None:
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self._async_client.aclose())
-            except RuntimeError:
-                asyncio.run(self._async_client.aclose())
+            self._close_async_client(self._async_client)
             self._async_client = None
+            self._async_client_loop = None
         self._client_kwargs_snapshot = None
+
+    @staticmethod
+    def _close_async_client(client: httpx.AsyncClient) -> None:
+        """Best-effort close of an async client from any context."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(client.aclose())
+        except RuntimeError:
+            # No running loop — safe to create a temporary one.
+            with contextlib.suppress(RuntimeError):
+                asyncio.run(client.aclose())
 
     def _get_client(self) -> httpx.Client:
         """Return a reusable sync httpx.Client, creating one if needed."""
@@ -440,10 +450,20 @@ class Request:
         return self._client
 
     async def _get_async_client(self) -> httpx.AsyncClient:
-        """Return a reusable async httpx.AsyncClient, creating one if needed."""
-        kwargs = self._build_client_kwargs()
+        """Return a reusable async httpx.AsyncClient, creating one if needed.
+
+        Detects event loop changes and recreates the client when the cached
+        instance is bound to a different (possibly closed) loop.
+        """
+        current_loop = asyncio.get_running_loop()
+        if self._async_client is not None and self._async_client_loop is not current_loop:
+            await self._async_client.aclose()
+            self._async_client = None
+            self._async_client_loop = None
         if self._async_client is None:
+            kwargs = self._build_client_kwargs()
             self._async_client = httpx.AsyncClient(**kwargs)
+            self._async_client_loop = current_loop
             self._client_kwargs_snapshot = kwargs
         return self._async_client
 
