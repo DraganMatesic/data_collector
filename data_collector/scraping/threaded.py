@@ -99,7 +99,11 @@ class ThreadedScraper(BaseScraper):
                 if self._abort_event.is_set():
                     executor.shutdown(wait=False, cancel_futures=True)
                     break
-                future.result()
+                try:
+                    future.result()
+                except Exception:
+                    self.logger.exception("Worker exception for item %s", futures[future])
+                    self.increment_failed()
                 if track_progress:
                     self.update_progress()
 

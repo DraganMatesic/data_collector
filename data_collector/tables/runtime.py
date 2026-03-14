@@ -51,7 +51,7 @@ class Runtime(Base):
     totalh = Column(Integer)
     except_cnt = Column(Integer, server_default=text("0"))
     exit_code = Column(Integer, server_default=text("0"))
-    date_created = Column(DateTime, server_default=text("NOW()"))
+    date_created = Column(DateTime, server_default=func.now())
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Runtime):

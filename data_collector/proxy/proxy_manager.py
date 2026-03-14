@@ -55,7 +55,7 @@ class ProxyManager:
         database: Database,
         target_domain: str,
         app_id: str,
-        judges: list[str] | None = None,
+        judges: list[str] | tuple[str, ...] | None = None,
         ttl_seconds: int = 1800,
         cooldown_seconds: int = 300,
         acquire_timeout: int = 120,
