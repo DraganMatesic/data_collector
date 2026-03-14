@@ -147,7 +147,7 @@ def scaffold_app(
         sys.exit(1)
 
     # Template context
-    ctx = {"group": group, "parent": parent, "name": name, "class_name": class_name}
+    template_context = {"group": group, "parent": parent, "name": name, "class_name": class_name}
 
     # Select main.py template
     template_map = {
@@ -167,10 +167,10 @@ def scaffold_app(
         _write_file(parent_init, f'"""Application parent: {group}.{parent}."""\n')
 
     # Write app files
-    _write_file(app_dir / "__init__.py", INIT_TEMPLATE.format(**ctx))
-    _write_file(app_dir / "main.py", main_template.format(**ctx))
-    _write_file(app_dir / "parser.py", PARSER_TEMPLATE.format(**ctx))
-    _write_file(app_dir / "tables.py", TABLES_TEMPLATE.format(**ctx))
+    _write_file(app_dir / "__init__.py", INIT_TEMPLATE.format(**template_context))
+    _write_file(app_dir / "main.py", main_template.format(**template_context))
+    _write_file(app_dir / "parser.py", PARSER_TEMPLATE.format(**template_context))
+    _write_file(app_dir / "tables.py", TABLES_TEMPLATE.format(**template_context))
 
     # Print structure
     type_labels = {"single": "single-threaded", "threaded": "multi-threaded", "async": "async"}

@@ -10,8 +10,10 @@ Classes:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import random
+import re
 import threading
 import time
 from datetime import datetime
@@ -367,6 +369,12 @@ class Request:
         self.last_request_url: str | None = None
         self._last_request_time: datetime | None = None
 
+        # Reusable httpx clients (created lazily, invalidated on config change)
+        self._client: httpx.Client | None = None
+        self._async_client: httpx.AsyncClient | None = None
+        self._async_client_loop: asyncio.AbstractEventLoop | None = None
+        self._client_kwargs_snapshot: dict[str, Any] | None = None
+
         # SOAP client reference
         self._soap_client: Any = None
 
@@ -375,22 +383,27 @@ class Request:
     def set_headers(self, headers: dict[str, str]) -> None:
         """Set default headers for all requests."""
         self._headers = dict(headers)
+        self._invalidate_clients()
 
     def reset_headers(self) -> None:
         """Clear all default headers."""
         self._headers = {}
+        self._invalidate_clients()
 
     def set_cookies(self, cookies: dict[str, str]) -> None:
         """Set cookies for session persistence."""
         self._cookies = dict(cookies)
+        self._invalidate_clients()
 
     def reset_cookies(self) -> None:
         """Clear all cookies."""
         self._cookies = {}
+        self._invalidate_clients()
 
     def set_auth(self, username: str, password: str) -> None:
         """Set HTTP basic authentication."""
         self._auth = (username, password)
+        self._invalidate_clients()
 
     def set_proxy(self, proxy_config: str | None) -> None:
         """Set proxy configuration.
@@ -400,6 +413,59 @@ class Request:
                 or None to clear.
         """
         self._proxy = proxy_config
+        self._invalidate_clients()
+
+    def close(self) -> None:
+        """Close reusable httpx clients and release connections."""
+        self._invalidate_clients()
+
+    def _invalidate_clients(self) -> None:
+        """Close and discard cached httpx clients."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+        if self._async_client is not None:
+            self._close_async_client(self._async_client)
+            self._async_client = None
+            self._async_client_loop = None
+        self._client_kwargs_snapshot = None
+
+    @staticmethod
+    def _close_async_client(client: httpx.AsyncClient) -> None:
+        """Best-effort close of an async client from any context."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(client.aclose())
+        except RuntimeError:
+            # No running loop — safe to create a temporary one.
+            with contextlib.suppress(RuntimeError):
+                asyncio.run(client.aclose())
+
+    def _get_client(self) -> httpx.Client:
+        """Return a reusable sync httpx.Client, creating one if needed."""
+        kwargs = self._build_client_kwargs()
+        if self._client is None:
+            self._client = httpx.Client(**kwargs)
+            self._client_kwargs_snapshot = kwargs
+        return self._client
+
+    async def _get_async_client(self) -> httpx.AsyncClient:
+        """Return a reusable async httpx.AsyncClient, creating one if needed.
+
+        Detects event loop changes and recreates the client when the cached
+        instance is bound to a different (possibly closed) loop.
+        """
+        current_loop = asyncio.get_running_loop()
+        if self._async_client is not None and self._async_client_loop is not current_loop:
+            await self._async_client.aclose()
+            self._async_client = None
+            self._async_client_loop = None
+        if self._async_client is None:
+            kwargs = self._build_client_kwargs()
+            self._async_client = httpx.AsyncClient(**kwargs)
+            self._async_client_loop = current_loop
+            self._client_kwargs_snapshot = kwargs
+        return self._async_client
 
     # --- HTTP methods ---
 
@@ -445,13 +511,12 @@ class Request:
         domain = self._extract_domain(url)
         proxy_key = self._get_proxy_key()
 
-        client_kwargs = self._build_client_kwargs()
+        client = self._get_client()
 
         for attempt in range(self._retries + 1):
             try:
                 start = time.monotonic()
-                with httpx.Client(**client_kwargs) as client:
-                    self.response = client.request(method, url, **kwargs)
+                self.response = client.request(method, url, **kwargs)
                 elapsed_ms = (time.monotonic() - start) * 1000
 
                 self.request_count += 1
@@ -485,11 +550,11 @@ class Request:
                 self.request_count += 1
                 error_type, retryable = self._classify_exception(exc)
                 self._record_error(error_type, str(exc), url)
+                if self._metrics:
+                    self._metrics.record_error(domain, proxy_key, error_type)
                 if retryable and attempt < self._retries:
                     time.sleep(self._backoff_factor ** attempt)
                     continue
-                if self._metrics:
-                    self._metrics.record_error(domain, proxy_key, error_type)
                 return None
 
         return self.response
@@ -502,13 +567,12 @@ class Request:
         domain = self._extract_domain(url)
         proxy_key = self._get_proxy_key()
 
-        client_kwargs = self._build_client_kwargs()
+        client = await self._get_async_client()
 
         for attempt in range(self._retries + 1):
             try:
                 start = time.monotonic()
-                async with httpx.AsyncClient(**client_kwargs) as client:
-                    self.response = await client.request(method, url, **kwargs)
+                self.response = await client.request(method, url, **kwargs)
                 elapsed_ms = (time.monotonic() - start) * 1000
 
                 self.request_count += 1
@@ -538,11 +602,11 @@ class Request:
                 self.request_count += 1
                 error_type, retryable = self._classify_exception(exc)
                 self._record_error(error_type, str(exc), url)
+                if self._metrics:
+                    self._metrics.record_error(domain, proxy_key, error_type)
                 if retryable and attempt < self._retries:
                     await asyncio.sleep(self._backoff_factor ** attempt)
                     continue
-                if self._metrics:
-                    self._metrics.record_error(domain, proxy_key, error_type)
                 return None
 
         return self.response
@@ -623,13 +687,15 @@ class Request:
             return False
         return last.get("type") == RequestErrorType.TIMEOUT
 
+    _SERVER_ERROR_PATTERN = re.compile(r"\b5\d{2}\b")
+
     def is_server_down(self) -> bool:
         """True if the last error indicates a 5xx server error."""
         last = self.exception_descriptor.get_last_error()
         if last is None:
             return False
         msg = last.get("message", "")
-        return any(str(code) in msg for code in range(500, 600))
+        return self._SERVER_ERROR_PATTERN.search(msg) is not None
 
     # --- Abort decision ---
 

@@ -142,11 +142,17 @@ class RetentionCleaner:
                 app_dir = package_root / group_name / parent_name / app_name
 
                 if app_dir.is_dir():
-                    shutil.rmtree(app_dir)
-                    self._logger.info(
-                        "Retention: deleted app directory %s/%s/%s",
-                        group_name, parent_name, app_name,
-                    )
+                    try:
+                        shutil.rmtree(app_dir)
+                        self._logger.info(
+                            "Retention: deleted app directory %s/%s/%s",
+                            group_name, parent_name, app_name,
+                        )
+                    except OSError:
+                        self._logger.exception(
+                            "Retention: failed to delete app directory %s/%s/%s",
+                            group_name, parent_name, app_name,
+                        )
 
             # Clean up orphaned AppParents (no remaining Apps reference them)
             seen_parents: set[tuple[str, str]] = set()

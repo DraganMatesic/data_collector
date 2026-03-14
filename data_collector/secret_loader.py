@@ -107,7 +107,7 @@ class SecretLoader:
                 if os_type == "Windows":
                     try:
                         _set_windows_env_var(name, value)
-                        print(f"Set {name} = {value} (User scope)")
+                        print(f"Set {name} (User scope)")
                     except Exception as e:
                         raise OSError(f"Failed to set {name}: {e}") from e
                 else:
@@ -115,7 +115,7 @@ class SecretLoader:
                     try:
                         with open(bashrc, "a", encoding="utf-8") as bash_file:
                             bash_file.write(f'\nexport {name}="{value}"')
-                        print(f"Set {name} = {value} in ~/.bashrc")
+                        print(f"Set {name} in ~/.bashrc")
                     except Exception as e:
                         raise OSError(f"Failed to write to .bashrc: {e}") from e
 
