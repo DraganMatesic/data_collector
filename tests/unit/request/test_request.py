@@ -552,6 +552,22 @@ def test_is_blocked_true_on_forcibly_closed() -> None:
     assert req.is_blocked() is True
 
 
+@respx.mock
+def test_is_blocked_not_stale_after_soap_error() -> None:
+    """Stale 403 response must not trigger is_blocked() when last error is SOAP fault."""
+    respx.get("https://example.com/page").mock(return_value=httpx.Response(403))
+    req = Request(timeout=5, retries=0)
+    req.get("https://example.com/page")
+    assert req.is_blocked() is True
+    # Simulate a subsequent SOAP error (records error but does not clear self.response)
+    req.exception_descriptor.clear()
+    req._last_request_time = None  # pyright: ignore[reportPrivateUsage]
+    req.exception_descriptor.add_error(RequestErrorType.REQUEST, "SOAP Fault: invalid input", "soap")
+    req._last_request_time = req.exception_descriptor.errors.copy().popitem()[0]  # pyright: ignore[reportPrivateUsage]
+    # self.response still holds 403, but last error is SOAP — is_blocked must be False
+    assert req.is_blocked() is False
+
+
 # ---------------------------------------------------------------------------
 # is_server_down — false-positive resistance
 # ---------------------------------------------------------------------------
@@ -562,6 +578,22 @@ def test_is_server_down_no_false_positive_on_timeout_500ms() -> None:
     req = Request(timeout=5, retries=0)
     req.exception_descriptor.add_error("timeout", "Read timed out after 500ms", "https://example.com")
     req._last_request_time = req.exception_descriptor.errors.copy().popitem()[0]  # pyright: ignore[reportPrivateUsage]
+    assert req.is_server_down() is False
+
+
+@respx.mock
+def test_is_server_down_not_stale_after_soap_error() -> None:
+    """Stale 500 response must not trigger is_server_down() when last error is SOAP fault."""
+    respx.get("https://example.com/page").mock(return_value=httpx.Response(500))
+    req = Request(timeout=5, retries=0)
+    req.get("https://example.com/page")
+    assert req.is_server_down() is True
+    # Simulate a subsequent SOAP error
+    req.exception_descriptor.clear()
+    req._last_request_time = None  # pyright: ignore[reportPrivateUsage]
+    req.exception_descriptor.add_error(RequestErrorType.REQUEST, "SOAP Fault: timeout", "soap")
+    req._last_request_time = req.exception_descriptor.errors.copy().popitem()[0]  # pyright: ignore[reportPrivateUsage]
+    # self.response still holds 500, but last error is SOAP — is_server_down must be False
     assert req.is_server_down() is False
 
 
