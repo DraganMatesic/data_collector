@@ -694,7 +694,11 @@ class Request:
         last = self.exception_descriptor.get_last_error()
         if last is None:
             return False
-        if self.response is not None and self.response.status_code in self._blocked_statuses:
+        if (
+            last.get("type") == RequestErrorType.BAD_STATUS
+            and self.response is not None
+            and self.response.status_code in self._blocked_statuses
+        ):
             return True
         return "forcibly closed" in last.get("message", "").lower()
 
@@ -716,6 +720,8 @@ class Request:
         """True if the last error indicates a 5xx server error."""
         last = self.exception_descriptor.get_last_error()
         if last is None:
+            return False
+        if last.get("type") != RequestErrorType.BAD_STATUS:
             return False
         return self.response is not None and 500 <= self.response.status_code < 600
 
