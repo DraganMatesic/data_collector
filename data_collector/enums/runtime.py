@@ -30,3 +30,11 @@ class RuntimeExitCode(IntEnum):
     CMD_RESET = 4
     CMD_STOP = 5
     CMD_START = 6
+
+
+class AppType(IntEnum):
+    """Classification of application orchestration role."""
+
+    STANDALONE = 0
+    MANAGED = 1
+    DRAMATIQ = 2
