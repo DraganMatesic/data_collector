@@ -34,6 +34,7 @@ class RabbitMQSettings(BaseSettings):
     # -- Connection --
     host: str = "localhost"
     port: int = 5672
+    management_port: int = 15672
     username: str = "guest"
     password: str = "guest"
     queue: str = "dc_manager"

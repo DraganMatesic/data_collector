@@ -1,12 +1,13 @@
 """Convenience exports for ORM models and codebook tables."""
 
-from data_collector.enums import CmdFlag, CmdName, FatalFlag, RunStatus
+from data_collector.enums import AppType, CmdFlag, CmdName, FatalFlag, RunStatus
 from data_collector.tables.apps import (
     AppDbObjects,
     AppFunctions,
     AppGroups,
     AppParents,
     Apps,
+    CodebookAppType,
     CodebookCommandFlags,
     CodebookCommandList,
     CodebookFatalFlags,
@@ -21,6 +22,14 @@ from data_collector.tables.captcha import (
 from data_collector.tables.command_log import CommandLog
 from data_collector.tables.log import CodebookLogLevel, FunctionLog, FunctionLogError, Logs
 from data_collector.tables.notifications import CodebookAlertSeverity
+from data_collector.tables.pipeline import (
+    CodebookPipelineStage,
+    CodebookPipelineStatus,
+    DeadLetter,
+    EventProcessingStatus,
+    Events,
+    PipelineTask,
+)
 from data_collector.tables.proxy import ProxyBlacklist, ProxyReservation
 from data_collector.tables.runtime import CodebookRuntimeCodes, Runtime
 from data_collector.tables.shared import Base
@@ -30,26 +39,34 @@ __all__ = [
     "AppFunctions",
     "AppGroups",
     "AppParents",
+    "AppType",
     "Apps",
     "Base",
     "CaptchaLog",
     "CaptchaLogError",
     "CmdFlag",
-    "CommandLog",
-    "CodebookCaptchaErrorCategory",
-    "CodebookCaptchaSolveStatus",
     "CmdName",
     "CodebookAlertSeverity",
+    "CodebookAppType",
+    "CodebookCaptchaErrorCategory",
+    "CodebookCaptchaSolveStatus",
     "CodebookCommandFlags",
     "CodebookCommandList",
     "CodebookFatalFlags",
     "CodebookLogLevel",
+    "CodebookPipelineStage",
+    "CodebookPipelineStatus",
     "CodebookRunStatus",
     "CodebookRuntimeCodes",
+    "CommandLog",
+    "DeadLetter",
+    "EventProcessingStatus",
+    "Events",
     "FatalFlag",
     "FunctionLog",
     "FunctionLogError",
     "Logs",
+    "PipelineTask",
     "ProxyBlacklist",
     "ProxyReservation",
     "RunStatus",
