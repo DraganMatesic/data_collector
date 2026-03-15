@@ -2,6 +2,7 @@ from enum import IntEnum, StrEnum
 
 from data_collector.enums import (
     AlertSeverity,
+    AppType,
     CmdFlag,
     CmdName,
     DbObjectType,
@@ -11,6 +12,23 @@ from data_collector.enums import (
     RuntimeExitCode,
     UnicodeForm,
 )
+
+# ---------------------------------------------------------------------------
+# AppType
+# ---------------------------------------------------------------------------
+
+def test_app_type_is_int_enum() -> None:
+    assert issubclass(AppType, IntEnum)
+
+
+def test_app_type_values() -> None:
+    assert AppType.STANDALONE == 0
+    assert AppType.MANAGED == 1
+    assert AppType.DRAMATIQ == 2
+
+
+def test_app_type_member_count() -> None:
+    assert len(AppType) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +208,7 @@ def test_alert_severity_member_count() -> None:
 # ---------------------------------------------------------------------------
 
 def test_no_duplicate_values_in_any_enum() -> None:
-    for enum_cls in (CmdFlag, CmdName, RunStatus, FatalFlag, RuntimeExitCode,
+    for enum_cls in (AppType, CmdFlag, CmdName, RunStatus, FatalFlag, RuntimeExitCode,
                      LogLevel, DbObjectType, UnicodeForm, AlertSeverity):
         values = [m.value for m in enum_cls]
         assert len(values) == len(set(values)), f"Duplicate values in {enum_cls.__name__}"

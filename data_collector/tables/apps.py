@@ -70,6 +70,17 @@ class CodebookRunStatus(Base):
     date_created = Column(DateTime, server_default=func.now())
 
 
+class CodebookAppType(Base):
+    """Codebook for application type classification."""
+
+    __tablename__ = "c_app_type"
+    id = Column(BigInteger, primary_key=True, comment="App type ID")
+    description = Column(String(128), comment="App type description")
+    sha = Column(String(64), comment="Hash for merge-based seeding")
+    archive = Column(DateTime, comment="Soft delete timestamp")
+    date_created = Column(DateTime, server_default=func.now())
+
+
 class AppGroups(Base):
     """
     Table contains logical grouping for applications.
@@ -183,9 +194,10 @@ class Apps(Base):
     # Disable flag (default: true = disabled)
     disable = Column(Boolean, server_default=text("true"), comment="disable flag for app (default: true = disabled)")
 
-    # Managed flag (default: false = not managed by orchestration Manager)
-    managed = Column(
-        Boolean, server_default=text("false"), comment="Whether app is managed by the orchestration Manager",
+    # Application type classification (default: 0 = standalone / not managed)
+    app_type = Column(
+        Integer, ForeignKey(CodebookAppType.id, ondelete="RESTRICT"),
+        server_default=text("0"), comment="Application type classification. FK to c_app_type",
     )
 
     # Scheduled removal

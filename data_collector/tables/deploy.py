@@ -12,20 +12,30 @@ from sqlalchemy import Table
 
 from data_collector.enums import (
     AlertSeverity,
+    AppType,
     CaptchaErrorCategory,
     CaptchaSolveStatus,
     CmdFlag,
     CmdName,
     FatalFlag,
     LogLevel,
+    PipelineStage,
+    PipelineStatus,
     RunStatus,
     RuntimeExitCode,
 )
 from data_collector.settings.main import LogSettings, MainDatabaseSettings, SplunkAdminSettings
-from data_collector.tables.apps import CodebookCommandFlags, CodebookCommandList, CodebookFatalFlags, CodebookRunStatus
+from data_collector.tables.apps import (
+    CodebookAppType,
+    CodebookCommandFlags,
+    CodebookCommandList,
+    CodebookFatalFlags,
+    CodebookRunStatus,
+)
 from data_collector.tables.captcha import CodebookCaptchaErrorCategory, CodebookCaptchaSolveStatus
 from data_collector.tables.log import CodebookLogLevel
 from data_collector.tables.notifications import CodebookAlertSeverity
+from data_collector.tables.pipeline import CodebookPipelineStage, CodebookPipelineStatus
 from data_collector.tables.runtime import CodebookRuntimeCodes
 from data_collector.tables.shared import Base
 from data_collector.utilities.database.main import Database
@@ -148,6 +158,13 @@ class Deploy:
             ]
             seed_data.append(SeedData(data=run_status, data_label="run_status"))
 
+            app_types = [
+                CodebookAppType(id=AppType.STANDALONE.value, description="Standalone app (manual or unmanaged)"),
+                CodebookAppType(id=AppType.MANAGED.value, description="Manager-scheduled app"),
+                CodebookAppType(id=AppType.DRAMATIQ.value, description="Dramatiq worker actor"),
+            ]
+            seed_data.append(SeedData(data=app_types, data_label="app_type"))
+
             log_levels = [CodebookLogLevel(id=member.value, description=member.name) for member in LogLevel]
             seed_data.append(SeedData(data=log_levels, data_label="log_level"))
 
@@ -210,6 +227,24 @@ class Deploy:
                 ),
             ]
             seed_data.append(SeedData(data=captcha_error_category, data_label="captcha_error_category"))
+
+            pipeline_status = [
+                CodebookPipelineStatus(id=PipelineStatus.PENDING.value, description="Task pending"),
+                CodebookPipelineStatus(id=PipelineStatus.IN_PROGRESS.value, description="Task in progress"),
+                CodebookPipelineStatus(id=PipelineStatus.COMPLETED.value, description="Task completed"),
+                CodebookPipelineStatus(id=PipelineStatus.FAILED.value, description="Task failed"),
+                CodebookPipelineStatus(id=PipelineStatus.RETRY.value, description="Task scheduled for retry"),
+            ]
+            seed_data.append(SeedData(data=pipeline_status, data_label="pipeline_status"))
+
+            pipeline_stage = [
+                CodebookPipelineStage(id=PipelineStage.PREPARE.value, description="Prepare stage"),
+                CodebookPipelineStage(id=PipelineStage.EXTRACT.value, description="Extract stage"),
+                CodebookPipelineStage(id=PipelineStage.PROCESS.value, description="Process stage"),
+                CodebookPipelineStage(id=PipelineStage.VALIDATE.value, description="Validate stage"),
+                CodebookPipelineStage(id=PipelineStage.LOAD.value, description="Load stage"),
+            ]
+            seed_data.append(SeedData(data=pipeline_stage, data_label="pipeline_stage"))
 
             for seed in seed_data:
                 try:

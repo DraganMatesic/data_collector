@@ -193,4 +193,6 @@ class LoggingService:
     def stop(self) -> None:
         """Stop queue listener if started."""
         if self.log_listener:
-            self.log_listener.stop()
+            thread = getattr(self.log_listener, "_thread", None)
+            if thread is not None and thread.is_alive():
+                self.log_listener.stop()

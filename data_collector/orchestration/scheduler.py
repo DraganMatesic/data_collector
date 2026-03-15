@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from croniter import croniter
 from sqlalchemy import select
 
-from data_collector.enums import FatalFlag, RunStatus
+from data_collector.enums import AppType, FatalFlag, RunStatus
 from data_collector.tables.apps import Apps
 from data_collector.utilities.app_status import update_app_status
 from data_collector.utilities.database.main import Database
@@ -45,7 +45,7 @@ class Scheduler:
             statement = (
                 select(Apps)
                 .where(
-                    Apps.managed == True,  # noqa: E712
+                    Apps.app_type == AppType.MANAGED,
                     Apps.disable == False,  # noqa: E712
                     Apps.run_status == RunStatus.NOT_RUNNING,
                     Apps.fatal_flag == FatalFlag.NONE,
