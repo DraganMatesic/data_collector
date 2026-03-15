@@ -42,7 +42,7 @@ def main() -> None:
     _add_common_args(create_parser)
     create_parser.add_argument(
         "--type",
-        choices=["single", "threaded", "async"],
+        choices=["single", "threaded", "async", "dramatiq"],
         default="single",
         dest="app_type",
         help="Template type (default: single)",
