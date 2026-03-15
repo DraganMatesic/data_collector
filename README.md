@@ -156,7 +156,7 @@ See [Roadmap](docs/50.%20roadmap.md) for the full work package breakdown.
 | Category | Documents |
 |----------|-----------|
 | **Core reference** | [Architecture](docs/1.1.%20architecture.md), [Data Model](docs/1.2.%20data-model.md), [Database](docs/4.1.%20database.md), [Hashing](docs/4.2.%20hashing.md) |
-| **Data collection** | [Request](docs/4.4.%20request.md), [Scraping](docs/11.%20scraping.md), [Proxy](docs/15.%20proxy.md), [Captcha](docs/16.%20captcha.md) |
+| **Data collection** | [Request](docs/4.4.%20request.md), [Scraping](docs/11.%20scraping.md), [Proxy](docs/15.%20proxy.md), [Captcha](docs/12.%20captcha.md) |
 | **Orchestration** | [Manager](docs/10.%20orchestration.md), [Dramatiq](docs/17.1.%20dramatiq.md), [Notifications](docs/18.%20notifications.md) |
 | **Developer guides** | [Getting Started](docs/30.%20getting-started.md), [First App](docs/31.%20first-app.md), [App Patterns](docs/32.%20app-patterns.md) |
 
