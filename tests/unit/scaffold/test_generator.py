@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from data_collector.enums import FatalFlag, RunStatus
+from data_collector.enums import AppType, FatalFlag, RunStatus
 from data_collector.scaffold.generator import (
     disable_app,
     enable_app,
@@ -209,6 +209,69 @@ class TestScaffoldApp:
         assert "create_worker_request" in main_content
 
 
+    @patch(f"{_MODULE}._register_app_in_db", return_value=True)
+    def test_creates_files_dramatiq(
+        self,
+        mock_register: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        scaffold_app(group="test", parent="demo", name="hello_world", app_type="dramatiq", _package_root=tmp_path)
+
+        app_dir = tmp_path / "test" / "demo" / "hello_world"
+        assert (app_dir / "__init__.py").exists()
+        assert (app_dir / "main.py").exists()
+        assert (app_dir / "topics.py").exists()
+
+    @patch(f"{_MODULE}._register_app_in_db", return_value=True)
+    def test_dramatiq_no_parser_or_tables(
+        self,
+        mock_register: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        scaffold_app(group="test", parent="demo", name="hello_world", app_type="dramatiq", _package_root=tmp_path)
+
+        app_dir = tmp_path / "test" / "demo" / "hello_world"
+        assert not (app_dir / "parser.py").exists()
+        assert not (app_dir / "tables.py").exists()
+
+    @patch(f"{_MODULE}._register_app_in_db", return_value=True)
+    def test_dramatiq_template_content(
+        self,
+        mock_register: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        scaffold_app(group="test", parent="demo", name="hello_world", app_type="dramatiq", _package_root=tmp_path)
+
+        main_content = (tmp_path / "test" / "demo" / "hello_world" / "main.py").read_text()
+        assert "@dramatiq.actor" in main_content
+        assert "FunWatchMixin" in main_content
+        assert "class HelloWorldProcessor" in main_content
+
+    @patch(f"{_MODULE}._register_app_in_db", return_value=True)
+    def test_dramatiq_topics_content(
+        self,
+        mock_register: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        scaffold_app(group="test", parent="demo", name="hello_world", app_type="dramatiq", _package_root=tmp_path)
+
+        topics_content = (tmp_path / "test" / "demo" / "hello_world" / "topics.py").read_text()
+        assert "MAIN_EXCHANGE_QUEUE" in topics_content
+        assert "TopicExchangeQueue" in topics_content
+
+    @patch(f"{_MODULE}._register_app_in_db", return_value=True)
+    def test_dramatiq_registers_as_dramatiq_type(
+        self,
+        mock_register: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        scaffold_app(group="test", parent="demo", name="hello_world", app_type="dramatiq", _package_root=tmp_path)
+
+        mock_register.assert_called_once()
+        call_kwargs = mock_register.call_args
+        assert call_kwargs[1]["resolved_app_type"] == AppType.DRAMATIQ
+
+
 def _make_mock_database(mock_app: MagicMock | None) -> MagicMock:
     """Build a mock Database whose session context manager and query chain return ``mock_app``."""
     mock_database = MagicMock()
@@ -230,7 +293,7 @@ class TestEnableApp:
         mock_settings_class: MagicMock,
     ) -> None:
         mock_app = MagicMock()
-        mock_app.managed = True
+        mock_app.app_type = AppType.MANAGED
         mock_database = _make_mock_database(mock_app)
         mock_database_class.return_value = mock_database
 
@@ -251,14 +314,14 @@ class TestEnableApp:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         mock_app = MagicMock()
-        mock_app.managed = False
+        mock_app.app_type = AppType.STANDALONE
         mock_database = _make_mock_database(mock_app)
         mock_database_class.return_value = mock_database
 
         enable_app("test", "demo", "hello")
 
         captured = capsys.readouterr()
-        assert "is not managed" in captured.err
+        assert "is not a managed app" in captured.err
         mock_database.create_session.return_value.__enter__.return_value.commit.assert_not_called()
 
 
@@ -298,7 +361,7 @@ class TestUnmanageApp:
 
         unmanage_app("test", "demo", "hello")
 
-        assert mock_app.managed is False
+        assert mock_app.app_type == AppType.STANDALONE
         assert mock_app.disable is True
         mock_database.create_session.return_value.__enter__.return_value.commit.assert_called_once()
 
@@ -321,7 +384,7 @@ class TestRemoveApp:
         remove_app("test", "demo", "hello", grace_days=7)
 
         assert mock_app.removal_date is not None
-        assert mock_app.managed is False
+        assert mock_app.app_type == AppType.STANDALONE
         assert mock_app.disable is True
         mock_database.create_session.return_value.__enter__.return_value.commit.assert_called_once()
 
