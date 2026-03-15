@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
-from data_collector.enums import FatalFlag, RunStatus
+from data_collector.enums import AppType, FatalFlag, RunStatus
 from data_collector.orchestration.scheduler import Scheduler
 
 
@@ -21,7 +21,7 @@ def _make_mock_app(
     group_name: str = "test_group",
     parent_name: str = "test_parent",
     app_name: str = "test_app",
-    managed: bool = True,
+    app_type: int = AppType.MANAGED,
 ) -> MagicMock:
     app = MagicMock()
     app.disable = disable
@@ -34,7 +34,7 @@ def _make_mock_app(
     app.group_name = group_name
     app.parent_name = parent_name
     app.app_name = app_name
-    app.managed = managed
+    app.app_type = app_type
     return app
 
 

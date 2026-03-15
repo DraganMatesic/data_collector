@@ -50,6 +50,16 @@ def test_cli_create_async_type(
     mock_scaffold.assert_called_once_with(group="cro", parent="fin", name="app", app_type="async")
 
 
+@patch(f"{_MODULE}.scaffold_app")
+def test_cli_create_dramatiq_type(
+    mock_scaffold: MagicMock,
+) -> None:
+    argv = ["prog", "create", "--group", "cro", "--parent", "fin", "--name", "ocr", "--type", "dramatiq"]
+    with patch.object(sys, "argv", argv):
+        main()
+    mock_scaffold.assert_called_once_with(group="cro", parent="fin", name="ocr", app_type="dramatiq")
+
+
 def test_cli_missing_required_args() -> None:
     with patch.object(sys, "argv", ["prog", "create", "--group", "x"]), pytest.raises(SystemExit) as exc_info:
         main()
