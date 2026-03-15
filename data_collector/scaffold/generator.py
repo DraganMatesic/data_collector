@@ -9,14 +9,16 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from data_collector.enums import FatalFlag, RunStatus
+from data_collector.enums import AppType, FatalFlag, RunStatus
 from data_collector.scaffold.templates import (
     INIT_TEMPLATE,
     MAIN_ASYNC_TEMPLATE,
+    MAIN_DRAMATIQ_TEMPLATE,
     MAIN_SINGLE_TEMPLATE,
     MAIN_THREADED_TEMPLATE,
     PARSER_TEMPLATE,
     TABLES_TEMPLATE,
+    TOPICS_TEMPLATE,
 )
 from data_collector.settings.main import MainDatabaseSettings
 from data_collector.tables.apps import AppGroups, AppParents, Apps
@@ -49,6 +51,8 @@ def _register_app_in_db(
     parent: str,
     name: str,
     app_id: str,
+    *,
+    resolved_app_type: AppType = AppType.MANAGED,
 ) -> bool:
     """Register the scaffolded app in the Apps table.
 
@@ -60,6 +64,7 @@ def _register_app_in_db(
         parent: Parent domain name.
         name: Application name.
         app_id: The 64-char SHA-256 app identifier.
+        resolved_app_type: Application type classification for the Apps row.
 
     Returns:
         True if registration succeeded, False otherwise.
@@ -98,7 +103,7 @@ def _register_app_in_db(
                     run_status=RunStatus.NOT_RUNNING,
                     fatal_flag=FatalFlag.NONE,
                     disable=True,
-                    managed=True,
+                    app_type=resolved_app_type,
                 ),
                 session,
                 filter_cols=["group_name", "parent_name", "app_name"],
@@ -154,8 +159,10 @@ def scaffold_app(
         "single": MAIN_SINGLE_TEMPLATE,
         "threaded": MAIN_THREADED_TEMPLATE,
         "async": MAIN_ASYNC_TEMPLATE,
+        "dramatiq": MAIN_DRAMATIQ_TEMPLATE,
     }
     main_template = template_map[app_type]
+    is_dramatiq = app_type == "dramatiq"
 
     # Create group and parent __init__.py if missing
     group_init = package_root / group / "__init__.py"
@@ -169,35 +176,50 @@ def scaffold_app(
     # Write app files
     _write_file(app_dir / "__init__.py", INIT_TEMPLATE.format(**template_context))
     _write_file(app_dir / "main.py", main_template.format(**template_context))
-    _write_file(app_dir / "parser.py", PARSER_TEMPLATE.format(**template_context))
-    _write_file(app_dir / "tables.py", TABLES_TEMPLATE.format(**template_context))
+
+    if is_dramatiq:
+        _write_file(app_dir / "topics.py", TOPICS_TEMPLATE.format(**template_context))
+    else:
+        _write_file(app_dir / "parser.py", PARSER_TEMPLATE.format(**template_context))
+        _write_file(app_dir / "tables.py", TABLES_TEMPLATE.format(**template_context))
 
     # Print structure
-    type_labels = {"single": "single-threaded", "threaded": "multi-threaded", "async": "async"}
-    type_label = type_labels[app_type]
     print("\nCreated app structure:")
     print(f"  data_collector/{group}/{parent}/{name}/")
-    print("  ├── __init__.py")
-    print(f"  ├── main.py      ({type_label} BaseScraper)")
-    print("  ├── parser.py")
-    print("  └── tables.py")
+    print("  +-- __init__.py")
+    if is_dramatiq:
+        print("  +-- main.py      (Dramatiq worker)")
+        print("  +-- topics.py    (queue definitions, auto-discovered)")
+    else:
+        type_labels = {"single": "single-threaded", "threaded": "multi-threaded", "async": "async"}
+        type_label = type_labels[app_type]
+        print(f"  +-- main.py      ({type_label} BaseScraper)")
+        print("  +-- parser.py")
+        print("  +-- tables.py")
 
     # Register in database
-    registered = _register_app_in_db(group, parent, name, app_id)
+    resolved_app_type = AppType.DRAMATIQ if is_dramatiq else AppType.MANAGED
+    registered = _register_app_in_db(group, parent, name, app_id, resolved_app_type=resolved_app_type)
 
     if registered:
         print("\nApp registered in database:")
-        print(f"  app_id:  {app_id}")
-        print("  status:  NOT_RUNNING")
+        print(f"  app_id:   {app_id}")
+        print(f"  app_type: {resolved_app_type.name}")
     else:
         print("\nApp NOT registered in database (connection unavailable).")
         print(f"  app_id:  {app_id}  (computed, register manually when DB is available)")
 
-    print("\nNext steps:")
-    print("  1. Edit tables.py -- define your ORM models")
-    print("  2. Edit parser.py -- implement Parser class methods")
-    print("  3. Edit main.py -- set base_url, implement collect() logic")
-    print(f"  4. Run: python -m data_collector.{group}.{parent}.{name}.main")
+    if is_dramatiq:
+        print("\nNext steps:")
+        print("  1. Edit topics.py -- configure queue name, exchange, and routing key")
+        print("  2. Edit main.py -- implement processing logic in the Processor class")
+        print("  3. Start Dramatiq workers to begin processing")
+    else:
+        print("\nNext steps:")
+        print("  1. Edit tables.py -- define your ORM models")
+        print("  2. Edit parser.py -- implement Parser class methods")
+        print("  3. Edit main.py -- set base_url, implement collect() logic")
+        print(f"  4. Run: python -m data_collector.{group}.{parent}.{name}.main")
 
 
 def _connect_database() -> Database | None:
@@ -232,9 +254,9 @@ def enable_app(group: str, parent: str, name: str) -> None:
         if app is None:
             print(f"Error: App not found: {group}/{parent}/{name}", file=sys.stderr)
             return
-        if not app.managed:
+        if app.app_type != AppType.MANAGED:
             print(
-                f"Error: App {group}/{parent}/{name} is not managed. "
+                f"Error: App {group}/{parent}/{name} is not a managed app. "
                 "Use scaffold create to register a managed app.",
                 file=sys.stderr,
             )
@@ -283,7 +305,7 @@ def disable_app(group: str, parent: str, name: str) -> None:
 def unmanage_app(group: str, parent: str, name: str) -> None:
     """Remove an app from Manager oversight.
 
-    Sets ``managed=False`` and ``disable=True``. The app remains in the
+    Sets ``app_type=STANDALONE`` and ``disable=True``. The app remains in the
     database but is invisible to the orchestration Manager.
 
     Args:
@@ -302,20 +324,20 @@ def unmanage_app(group: str, parent: str, name: str) -> None:
         if app is None:
             print(f"Error: App not found: {group}/{parent}/{name}", file=sys.stderr)
             return
-        app.managed = False  # type: ignore[assignment]
+        app.app_type = AppType.STANDALONE  # type: ignore[assignment]
         app.disable = True  # type: ignore[assignment]
         session.commit()
 
     print(f"App unmanaged: {group}/{parent}/{name}")
-    print(f"  app_id:  {app_id}")
-    print("  managed: False")
-    print("  disable: True")
+    print(f"  app_id:   {app_id}")
+    print("  app_type: STANDALONE")
+    print("  disable:  True")
 
 
 def remove_app(group: str, parent: str, name: str, *, grace_days: int = 30) -> None:
     """Mark an app for removal after a grace period.
 
-    Sets ``removal_date`` to ``now + grace_days``, ``managed=False``, and
+    Sets ``removal_date`` to ``now + grace_days``, ``app_type=STANDALONE``, and
     ``disable=True``. The retention cleaner will delete the app directory
     and database rows after ``removal_date`` passes.
 
@@ -347,7 +369,7 @@ def remove_app(group: str, parent: str, name: str, *, grace_days: int = 30) -> N
             return
         scheduled_removal = datetime.now(UTC) + timedelta(days=grace_days)
         app.removal_date = scheduled_removal  # type: ignore[assignment]
-        app.managed = False  # type: ignore[assignment]
+        app.app_type = AppType.STANDALONE  # type: ignore[assignment]
         app.disable = True  # type: ignore[assignment]
         session.commit()
 
@@ -355,5 +377,5 @@ def remove_app(group: str, parent: str, name: str, *, grace_days: int = 30) -> N
     print(f"  app_id:       {app_id}")
     print(f"  removal_date: {scheduled_removal.strftime('%Y-%m-%d')}")
     print(f"  grace_days:   {grace_days}")
-    print("  managed:      False")
+    print("  app_type:     STANDALONE")
     print("  disable:      True")

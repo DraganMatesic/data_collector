@@ -479,3 +479,125 @@ class {class_name}Record(Base):
     date_created = Column(DateTime, server_default=func.now())
     date_modified = Column(DateTime, onupdate=func.now())
 '''
+
+TOPICS_TEMPLATE = '''"""Dramatiq topic and queue definitions for {group}.{parent}.{name}.
+
+The framework auto-discovers this file at startup via ``get_topic_modules()``.
+No manual registration required.
+"""
+
+from data_collector.dramatiq.topic.base import OCR_TOPIC_EXCHANGE, TopicExchangeQueue
+
+MAIN_EXCHANGE_QUEUE = TopicExchangeQueue(
+    name="dc_{name}",
+    actor_name="{name}_worker",
+    exchange_name=OCR_TOPIC_EXCHANGE.name,
+    routing_key="ocr.new.{name}",
+    actor_path="data_collector.{group}.{parent}.{name}.main",
+)
+"""Primary queue for {name} processing. TaskDispatcher reads this constant."""
+'''
+
+MAIN_DRAMATIQ_TEMPLATE = '''"""{class_name} Dramatiq worker for {group}.{parent}.{name}."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+
+import dramatiq
+import structlog
+
+from data_collector.enums import AppType
+from data_collector.enums.runtime import FatalFlag, RunStatus
+from data_collector.settings.main import MainDatabaseSettings
+from data_collector.tables.apps import AppGroups, AppParents, Apps
+from data_collector.tables.runtime import Runtime
+from data_collector.utilities.database.main import Database
+from data_collector.utilities.fun_watch import FunWatchMixin, fun_watch
+from data_collector.utilities.functions.runtime import AppInfo, get_app_info
+
+from .topics import MAIN_EXCHANGE_QUEUE
+
+_APP_INFO: AppInfo = get_app_info(__file__, depth=-4)  # type: ignore[assignment]
+_APP_ID: str = _APP_INFO["app_id"]
+_DATABASE = Database(MainDatabaseSettings())
+
+
+def _register_app(database: Database, app_info: AppInfo) -> None:
+    """Register AppGroups, AppParents, and Apps rows using idempotent update_insert."""
+    with database.create_session() as session:
+        database.update_insert(AppGroups(name=app_info["app_group"]), session, filter_cols=["name"])
+
+    with database.create_session() as session:
+        database.update_insert(
+            AppParents(name=app_info["app_parent"], group_name=app_info["app_group"], parent=app_info["parent_id"]),
+            session,
+            filter_cols=["name", "group_name"],
+        )
+
+    with database.create_session() as session:
+        database.update_insert(
+            Apps(
+                app=app_info["app_id"],
+                group_name=app_info["app_group"],
+                parent_name=app_info["app_parent"],
+                app_name=app_info["app_name"],
+                parent_id=app_info["parent_id"],
+                run_status=RunStatus.NOT_RUNNING,
+                fatal_flag=FatalFlag.NONE,
+                disable=True,
+                app_type=AppType.DRAMATIQ,
+            ),
+            session,
+            filter_cols=["group_name", "parent_name", "app_name"],
+        )
+
+
+_register_app(_DATABASE, _APP_INFO)
+
+
+def _create_runtime() -> str:
+    """Create a Runtime row for this actor invocation and return the runtime_id."""
+    runtime_id = uuid.uuid4().hex
+    with _DATABASE.create_session() as session:
+        session.add(Runtime(
+            runtime=runtime_id,
+            app_id=_APP_ID,
+            start_time=datetime.now(UTC),
+        ))
+        session.commit()
+    return runtime_id
+
+
+class {class_name}Processor(FunWatchMixin):
+    """Processes tasks received from the {name} queue."""
+
+    def __init__(self, app_id: str, runtime: str) -> None:
+        self.app_id = app_id
+        self.runtime = runtime
+        self.logger = structlog.get_logger(__name__).bind(app_id=app_id, runtime=runtime)
+
+    @fun_watch
+    def run(self, event_id: int) -> None:
+        """Process a single event.
+
+        Args:
+            event_id: ID of the event row from the Events table.
+        """
+        self.logger.info("Processing event %d", event_id)
+        # TODO: Implement processing logic here
+        self._fun_watch.mark_solved()
+
+
+@dramatiq.actor(
+    queue_name=MAIN_EXCHANGE_QUEUE.name,
+    max_retries=3,
+    on_retry_exhausted="log_dead_letter",
+)
+def {name}_worker(event_id: int) -> None:
+    """Thin entry point -- delegates to the processor class."""
+    runtime_id = _create_runtime()
+    processor = {class_name}Processor(app_id=_APP_ID, runtime=runtime_id)
+    processor.run(event_id)
+'''
