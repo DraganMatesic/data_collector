@@ -100,7 +100,7 @@ class TestDispatchBatch:
         dispatcher, mock_database, _ = _make_dispatcher()
 
         mock_session = MagicMock()
-        mock_session.execute.return_value.scalar.return_value = 0
+        mock_database.query.return_value.scalar.return_value = 0
         mock_database.create_session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_database.create_session.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -119,11 +119,11 @@ class TestDispatchBatch:
         mock_event_2.app_path = "some.module"
 
         mock_session = MagicMock()
-        # First execute: COUNT query returns 2
-        # Second execute: events query returns scalars iterator
+        # First query: COUNT query returns 2
+        # Second query: events query returns scalars iterator
         events_result = MagicMock()
         events_result.yield_per.return_value.scalars.return_value = [mock_event_1, mock_event_2]
-        mock_session.execute.side_effect = [
+        mock_database.query.side_effect = [
             MagicMock(scalar=MagicMock(return_value=2)),
             events_result,
         ]
@@ -142,7 +142,7 @@ class TestDispatchEvent:
 
     @patch("data_collector.dramatiq.task_dispatcher.importlib.import_module")
     def test_dispatches_event_successfully(self, mock_import: MagicMock) -> None:
-        dispatcher, _, mock_broker = _make_dispatcher()
+        dispatcher, mock_database, mock_broker = _make_dispatcher()
 
         mock_queue_def = MagicMock()
         mock_queue_def.name = "dc_test_queue"
@@ -165,7 +165,7 @@ class TestDispatchEvent:
         assert result is True
         mock_broker.create_message.assert_called_once()
         mock_broker.publish.assert_called_once()
-        mock_session.add.assert_called_once()
+        mock_database.add.assert_called_once()
         mock_session.commit.assert_called_once()
 
     @patch("data_collector.dramatiq.task_dispatcher.importlib.import_module")

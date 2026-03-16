@@ -36,6 +36,10 @@ python data_collector/utilities/validate_docs.py    # Doc validator (if docs cha
 
 All new code must pass all four gates. Do not skip any.
 
+## Housekeeping
+
+- Check for pip install artifacts in the project root (files like `=6.0.0`, `=2.1.3` created by malformed `pip install` commands). Delete any such files before committing.
+
 ## Code Rules
 
 - Line length: 120 characters
@@ -59,6 +63,7 @@ All new code must pass all four gates. Do not skip any.
 | Constants | `UPPER_SNAKE` | `NAMING_CONVENTION` |
 | ORM tables | `PascalCase` class, `snake_case` tablename | `class Apps`, `__tablename__ = "apps"` |
 | Database columns | `snake_case` | `next_run`, `date_created` |
+| DateTime columns | `_date` suffix (preferred) or `date_` prefix | `stabilized_date`, `date_created` (never `_at` suffix) |
 | Enum members | `UPPER_SNAKE` | `RunStatus.RUNNING` |
 
 ## Architecture Rules
@@ -69,6 +74,14 @@ All new code must pass all four gates. Do not skip any.
 - Settings via Pydantic (`BaseSettings` with `env_prefix`). Never hardcode credentials or connection strings
 - Logging via framework `LoggingService`. Never use `print()` or bare `logging.getLogger()` in app code
 - No direct SQL in application code. Use SQLAlchemy ORM and `Database` class methods
+- All database operations must go through the `Database` object, never directly on the session:
+  - **SELECT**: `database.query(select(...), session)` -- never `session.execute(select(...))`
+  - **INSERT single**: `database.add(instance, session)` -- never `session.add(instance)`
+  - **INSERT bulk**: `database.bulk_insert(objects, session)` -- never `session.add_all(objects)`
+  - **UPDATE/DELETE DML**: `database.run(update/delete(...), session)` -- never `session.execute(update(...))`
+  - **Stored procedures**: `database.execute(sql_text, session)` -- never `session.execute(text(...))`
+  - `session.commit()` and `session.rollback()` are allowed directly (session lifecycle, not DB operations)
+  - Reason: `Database` methods enable automatic dependency tracking via `AppDbObjects`
 - App namespace: `data_collector/<country>/<parent>/<app>/`
 - Enum namespace: `data_collector/enums/` (locked)
 - Request import: `from data_collector.utilities.request import Request`

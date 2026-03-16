@@ -10,18 +10,22 @@ from __future__ import annotations
 import argparse
 import logging
 import signal
+from typing import Any, cast
 
 from sqlalchemy import select
 
+from data_collector.dramatiq.broker import DramatiqBroker
 from data_collector.enums import RunStatus
 from data_collector.messaging.connection import RabbitMQConnection
 from data_collector.notifications.dispatcher import NotificationDispatcher
 from data_collector.orchestration.manager import Manager
 from data_collector.orchestration.process_tracker import ProcessTracker
+from data_collector.settings.dramatiq import DramatiqSettings, TaskDispatcherSettings
 from data_collector.settings.main import LogSettings, MainDatabaseSettings
 from data_collector.settings.manager import ManagerSettings
 from data_collector.settings.notification import NotificationSettings
 from data_collector.settings.rabbitmq import RabbitMQSettings
+from data_collector.settings.watchservice import WatchServiceSettings
 from data_collector.tables.apps import Apps
 from data_collector.utilities.app_status import update_app_status
 from data_collector.utilities.database.main import Database
@@ -40,13 +44,16 @@ def _run_manager() -> None:
         if notification_settings.notifications_enabled:
             notification_dispatcher = NotificationDispatcher.from_settings(notification_settings)
 
-    # Optional: RabbitMQ connection
+    # Optional: RabbitMQ connection + Dramatiq broker
     rabbitmq_connection: RabbitMQConnection | None = None
     rabbitmq_settings: RabbitMQSettings | None = None
+    dramatiq_broker: DramatiqBroker | None = None
     if settings.rabbitmq_enabled:
         rabbitmq_settings = RabbitMQSettings()
         rabbitmq_connection = RabbitMQConnection(rabbitmq_settings)
         rabbitmq_connection.connect()
+        dramatiq_settings = DramatiqSettings()
+        dramatiq_broker = DramatiqBroker(rabbitmq_settings, dramatiq_settings)
 
     # Logging
     log_settings = LogSettings()
@@ -60,10 +67,13 @@ def _run_manager() -> None:
     manager = Manager(
         database,
         settings,
-        logger=logger,  # type: ignore[arg-type]
+        logger=cast(logging.Logger, logger),
         notification_dispatcher=notification_dispatcher,
         rabbitmq_connection=rabbitmq_connection,
         rabbitmq_settings=rabbitmq_settings,
+        dramatiq_broker=dramatiq_broker,
+        watch_service_settings=WatchServiceSettings(),
+        task_dispatcher_settings=TaskDispatcherSettings(),
     )
 
     # Signal handlers for graceful shutdown
@@ -105,8 +115,9 @@ def _stop_apps() -> None:
 
     stopped_count = 0
     for app in apps_with_pids:
-        pid_str = str(app.app_pids) if app.app_pids is not None else ""  # type: ignore[redundant-expr]
-        app_id = str(app.app)
+        app_record: Any = app
+        pid_str = str(app_record.app_pids) if app_record.app_pids is not None else ""
+        app_id = str(app_record.app)
         if not pid_str:
             continue
 
@@ -137,7 +148,8 @@ def _clear_app_pids(database: Database, app_id: str) -> None:
         statement = select(Apps).where(Apps.app == app_id)
         row = database.query(statement, session).scalar_one_or_none()
         if row is not None:
-            row.app_pids = None  # type: ignore[assignment]
+            app_row: Any = row
+            app_row.app_pids = None
             session.commit()
 
 

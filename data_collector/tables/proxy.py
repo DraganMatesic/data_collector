@@ -28,10 +28,10 @@ class ProxyReservation(Base):
     ip_address = Column(String(45), nullable=False)
     target_domain = Column(String(255), nullable=False)
     app_id = Column(String(64), nullable=False)
-    reserved_at = Column(DateTime, nullable=False)
+    reservation_date = Column(DateTime, nullable=False)
     ttl_seconds = Column(Integer, default=1800)
     released = Column(Boolean, default=False, nullable=False)
-    released_at = Column(DateTime, nullable=True)
+    released_date = Column(DateTime, nullable=True)
 
     __table_args__ = (
         Index(
@@ -66,8 +66,8 @@ class ProxyBlacklist(Base):
     ip_address = Column(String(45), nullable=False)
     target_domain = Column(String(255), nullable=False)
     failure_count = Column(Integer, default=1, nullable=False)
-    first_failure_at = Column(DateTime, nullable=False)
-    last_failure_at = Column(DateTime, nullable=False)
+    first_failure_date = Column(DateTime, nullable=False)
+    last_failure_date = Column(DateTime, nullable=False)
     lockout_until = Column(DateTime, nullable=True)
     lockout_level = Column(Integer, default=0, nullable=False)
     is_banned = Column(Boolean, default=False, nullable=False)

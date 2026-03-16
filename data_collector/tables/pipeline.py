@@ -11,7 +11,19 @@ CodebookPipelineStatus and CodebookPipelineStage are standard codebook tables
 seeded from the corresponding IntEnums in ``data_collector.enums.pipeline``.
 """
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.sql import func
 
 from data_collector.tables.shared import Base
@@ -53,13 +65,52 @@ class Events(Base):
     id = auto_increment_column()
     app_path = Column(
         String(512),
-        nullable=True,
+        nullable=False,
         comment="Python module path for dynamic import of TopicExchangeQueue definition",
     )
     file_path = Column(Text, nullable=True, comment="Source document or file path")
     document_type = Column(String(128), nullable=True, index=True, comment="Document type identifier")
     metadata_json = Column(Text, nullable=True, comment="Arbitrary JSON payload for the event")
+    event_type = Column(Integer, nullable=False, index=True, comment="EventType enum value (1=CREATED, 2=MODIFIED)")
+    path_hash = Column(String(64), nullable=False, index=True, comment="SHA hash of normalized file path")
+    country = Column(String(8), nullable=False, index=True, comment="Country code for pipeline routing")
+    watch_group = Column(String(128), nullable=False, index=True, comment="Logical watch group (e.g. ocr, ingest)")
+    file_size = Column(BigInteger, nullable=True, comment="Final file size in bytes (set on stabilization)")
+    stable = Column(
+        Boolean, nullable=True, server_default=text("1"), comment="False while streaming, True when stable",
+    )
+    stabilized_date = Column(DateTime, nullable=True, comment="When file became stable")
+    corrupted = Column(
+        Boolean, nullable=True, server_default=text("0"), comment="True if worker detected file corruption",
+    )
+    destination_path = Column(Text, nullable=True, comment="Permanent storage path after worker moves file")
     app_id = Column(String(64), index=True, nullable=True, comment="Producer application identifier")
+    archive = Column(DateTime, nullable=True, comment="Soft delete timestamp")
+    date_created = Column(DateTime, server_default=func.now())
+
+
+class WatchRoots(Base):
+    """Persistent configuration for watched directory roots.
+
+    Each row defines a directory that WatchService monitors for new files.
+    The ``app_path`` links detected events to the Dramatiq actor module
+    that processes them.  Rows with ``active=True`` and ``archive IS NULL``
+    are loaded on startup and periodically refreshed at runtime.
+    """
+
+    __tablename__ = "watch_roots"
+
+    id = auto_increment_column()
+    root_path = Column(String(1024), nullable=False, comment="Absolute path to the watched directory")
+    rel_path = Column(String(512), nullable=False, comment="Relative path identifier for routing")
+    country = Column(String(8), nullable=False, index=True, comment="Country code for pipeline routing")
+    watch_group = Column(String(128), nullable=False, index=True, comment="Logical watch group (e.g. ocr, ingest)")
+    app_path = Column(String(512), nullable=False, comment="Python module path for Dramatiq actor import")
+    extensions = Column(Text, nullable=True, comment="JSON array of allowed extensions (e.g. [\".pdf\", \".zip\"])")
+    recursive = Column(Boolean, nullable=False, server_default=text("1"), comment="Whether to watch subdirectories")
+    active = Column(
+        Boolean, nullable=False, server_default=text("1"), comment="Whether this root is currently monitored",
+    )
     archive = Column(DateTime, nullable=True, comment="Soft delete timestamp")
     date_created = Column(DateTime, server_default=func.now())
 
@@ -84,7 +135,7 @@ class EventProcessingStatus(Base):
         comment="Reference to the source event",
     )
     actor_name = Column(String(128), nullable=False, comment="Dramatiq actor that received this event")
-    dispatched_at = Column(DateTime, nullable=False, comment="When the message was published to RabbitMQ")
+    dispatched_date = Column(DateTime, nullable=False, comment="When the message was published to RabbitMQ")
     date_created = Column(DateTime, server_default=func.now())
 
     __table_args__ = (
@@ -177,4 +228,4 @@ class RateLimiterState(Base):
 
     key = Column(String(256), primary_key=True, comment="Rate limiter key")
     value = Column(Integer, nullable=False, server_default=text("0"), comment="Current counter value")
-    expires_at = Column(DateTime, nullable=True, comment="Key expiration timestamp (UTC)")
+    expiration_date = Column(DateTime, nullable=True, comment="Key expiration timestamp (UTC)")

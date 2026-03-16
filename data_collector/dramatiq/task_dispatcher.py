@@ -16,6 +16,7 @@ import importlib
 import logging
 import threading
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -150,12 +151,11 @@ class TaskDispatcher:
                     Events.id == EventProcessingStatus.event_id,
                 )
                 .where(
-                    Events.archive.is_(None),  # pyright: ignore[reportUnknownMemberType]
-                    Events.app_path.isnot(None),  # pyright: ignore[reportUnknownMemberType]
-                    EventProcessingStatus.id.is_(None),  # pyright: ignore[reportUnknownMemberType]
+                    Events.archive.is_(None),
+                    EventProcessingStatus.id.is_(None),
                 )
             )
-            pending_count = session.execute(count_query).scalar()
+            pending_count = self._database.query(count_query, session).scalar()
 
             if not pending_count:
                 return 0
@@ -167,13 +167,12 @@ class TaskDispatcher:
                     Events.id == EventProcessingStatus.event_id,
                 )
                 .where(
-                    Events.archive.is_(None),  # pyright: ignore[reportUnknownMemberType]
-                    Events.app_path.isnot(None),  # pyright: ignore[reportUnknownMemberType]
-                    EventProcessingStatus.id.is_(None),  # pyright: ignore[reportUnknownMemberType]
+                    Events.archive.is_(None),
+                    EventProcessingStatus.id.is_(None),
                 )
                 .limit(self._batch_size)
             )
-            events = session.execute(events_query).yield_per(self._yield_per).scalars()
+            events = self._database.query(events_query, session).yield_per(self._yield_per).scalars()
 
             dispatched = 0
             for event in events:
@@ -199,14 +198,14 @@ class TaskDispatcher:
         """
         try:
             module = importlib.import_module(str(event.app_path))
-            queue_definition: TopicExchangeQueue = module.MAIN_EXCHANGE_QUEUE  # pyright: ignore[reportUnknownMemberType]
+            queue_definition: TopicExchangeQueue = cast(Any, module).MAIN_EXCHANGE_QUEUE
 
-            message = self._broker.create_message(  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+            message = cast(Any, self._broker).create_message(
                 queue_name=queue_definition.name,
                 actor_name=queue_definition.actor_name,
                 args=(event.id,),
             )
-            self._broker.publish(  # pyright: ignore[reportUnknownMemberType]
+            cast(Any, self._broker).publish(
                 message,
                 exchange_name=queue_definition.exchange_name,
                 routing_key=queue_definition.routing_key,
@@ -215,9 +214,9 @@ class TaskDispatcher:
             processing_status = EventProcessingStatus(
                 event_id=event.id,
                 actor_name=queue_definition.actor_name,
-                dispatched_at=datetime.now(UTC),
+                dispatched_date=datetime.now(UTC),
             )
-            session.add(processing_status)
+            self._database.add(processing_status, session)
             session.commit()
 
             logger.debug(

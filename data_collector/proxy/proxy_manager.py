@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 from sqlalchemy import and_, delete, select, update
 from sqlalchemy.exc import IntegrityError
@@ -182,10 +183,10 @@ class ProxyManager:
                         ProxyReservation.ip_address == ip_address,
                         ProxyReservation.target_domain == self.reservation_domain,
                         ProxyReservation.app_id == self.app_id,
-                        ProxyReservation.released == False,  # noqa: E712
+                        ProxyReservation.released.is_(False),
                     )
                 )
-                .values(released=True, released_at=datetime.now(UTC))
+                .values(released=True, released_date=datetime.now(UTC))
             )
             self.database.run(statement, session)
             session.commit()
@@ -231,11 +232,11 @@ class ProxyManager:
                     and_(
                         ProxyReservation.ip_address == ip_address,
                         ProxyReservation.target_domain == self.reservation_domain,
-                        ProxyReservation.released == False,  # noqa: E712
-                        ProxyReservation.reserved_at < ttl_cutoff,
+                        ProxyReservation.released.is_(False),
+                        ProxyReservation.reservation_date < ttl_cutoff,
                     )
                 )
-                .values(released=True, released_at=now)
+                .values(released=True, released_date=now)
             )
             self.database.run(expire_statement, session)
 
@@ -245,8 +246,8 @@ class ProxyManager:
                     and_(
                         ProxyReservation.ip_address == ip_address,
                         ProxyReservation.target_domain == self.reservation_domain,
-                        ProxyReservation.released == True,  # noqa: E712
-                        ProxyReservation.released_at > cooldown_cutoff,
+                        ProxyReservation.released.is_(True),
+                        ProxyReservation.released_date > cooldown_cutoff,
                     )
                 )
                 .limit(1)
@@ -259,7 +260,7 @@ class ProxyManager:
                     ip_address=ip_address,
                     target_domain=self.reservation_domain,
                     app_id=self.app_id,
-                    reserved_at=now,
+                    reservation_date=now,
                     ttl_seconds=self.ttl_seconds,
                 )
                 self.database.add(reservation, session)
@@ -302,12 +303,12 @@ class ProxyManager:
             statement = delete(ProxyReservation).where(
                 and_(
                     ProxyReservation.app_id == self.app_id,
-                    ProxyReservation.released == True,  # noqa: E712
-                    ProxyReservation.released_at < cutoff,
+                    ProxyReservation.released.is_(True),
+                    ProxyReservation.released_date < cutoff,
                 )
             )
             result = self.database.run(statement, session)
-            deleted_count = int(result.rowcount)  # type: ignore[arg-type]
+            deleted_count = int(cast(Any, result).rowcount)
             session.commit()
             return deleted_count
 
@@ -323,11 +324,11 @@ class ProxyManager:
             statement = delete(ProxyReservation).where(
                 and_(
                     ProxyReservation.app_id == self.app_id,
-                    ProxyReservation.released == True,  # noqa: E712
+                    ProxyReservation.released.is_(True),
                 )
             )
             result = self.database.run(statement, session)
-            deleted_count = int(result.rowcount)  # type: ignore[arg-type]
+            deleted_count = int(cast(Any, result).rowcount)
             session.commit()
         if deleted_count > 0:
             logger.debug(
@@ -377,23 +378,23 @@ def cleanup_all_reservations(
     with database.create_session() as session:
         released_statement = delete(ProxyReservation).where(
             and_(
-                ProxyReservation.released == True,  # noqa: E712
-                ProxyReservation.released_at < cooldown_cutoff,
+                ProxyReservation.released.is_(True),
+                ProxyReservation.released_date < cooldown_cutoff,
             )
         )
         result = database.run(released_statement, session)
-        total_deleted += int(result.rowcount)  # type: ignore[arg-type]
+        total_deleted += int(cast(Any, result).rowcount)
         session.commit()
 
     with database.create_session() as session:
         orphan_statement = delete(ProxyReservation).where(
             and_(
-                ProxyReservation.released == False,  # noqa: E712
-                ProxyReservation.reserved_at < ttl_cutoff,
+                ProxyReservation.released.is_(False),
+                ProxyReservation.reservation_date < ttl_cutoff,
             )
         )
         result = database.run(orphan_statement, session)
-        total_deleted += int(result.rowcount)  # type: ignore[arg-type]
+        total_deleted += int(cast(Any, result).rowcount)
         session.commit()
 
     if total_deleted > 0:

@@ -2,6 +2,7 @@
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 from sqlalchemy import and_, delete, select
 
@@ -68,9 +69,9 @@ class BlacklistChecker:
             row = self.database.query(statement, session).scalar_one_or_none()
             if row is None:
                 return False
-            if row.is_banned:  # type: ignore[truthy-bool]
-                return True  # type: ignore[return-value]
-            return bool(row.lockout_until is not None and row.lockout_until > now)  # type: ignore[operator]
+            if row.is_banned:
+                return True
+            return bool(row.lockout_until is not None and row.lockout_until > now)
 
     def record_failure(self, ip_address: str) -> None:
         """Record a proxy failure and escalate the lockout level.
@@ -98,22 +99,22 @@ class BlacklistChecker:
                     ip_address=ip_address,
                     target_domain=self.target_domain,
                     failure_count=1,
-                    first_failure_at=now,
-                    last_failure_at=now,
+                    first_failure_date=now,
+                    last_failure_date=now,
                     lockout_until=lockout_until,
                     lockout_level=0,
                     is_banned=False,
                 )
                 self.database.add(new_entry, session)
             else:
-                row.failure_count = row.failure_count + 1  # type: ignore[assignment]
-                row.last_failure_at = now  # type: ignore[assignment]
+                row.failure_count = row.failure_count + 1
+                row.last_failure_date = now
                 new_level = row.lockout_level + 1
 
-                if new_level >= len(self.lockout_durations):  # type: ignore[operator]
-                    row.is_banned = True  # type: ignore[assignment]
-                    row.lockout_until = None  # type: ignore[assignment]
-                    row.lockout_level = new_level  # type: ignore[assignment]
+                if new_level >= len(self.lockout_durations):
+                    row.is_banned = True
+                    row.lockout_until = None
+                    row.lockout_level = new_level
                     logger.warning(
                         "Proxy IP permanently banned",
                         extra={
@@ -123,15 +124,15 @@ class BlacklistChecker:
                         },
                     )
                 else:
-                    row.lockout_level = new_level  # type: ignore[assignment]
-                    row.lockout_until = now + self.lockout_durations[new_level]  # type: ignore[assignment]
+                    row.lockout_level = new_level
+                    row.lockout_until = now + self.lockout_durations[new_level]
 
             session.commit()
 
     def cleanup_expired(self) -> int:
         """Remove non-banned blacklist entries older than the retention period.
 
-        Deletes entries where ``last_failure_at`` is older than
+        Deletes entries where ``last_failure_date`` is older than
         ``retention_days`` and the IP is not permanently banned. This prevents
         the blacklist table from growing unboundedly.
 
@@ -143,12 +144,12 @@ class BlacklistChecker:
             statement = delete(ProxyBlacklist).where(
                 and_(
                     ProxyBlacklist.target_domain == self.target_domain,
-                    ProxyBlacklist.is_banned == False,  # noqa: E712
-                    ProxyBlacklist.last_failure_at < cutoff,
+                    ProxyBlacklist.is_banned.is_(False),
+                    ProxyBlacklist.last_failure_date < cutoff,
                 )
             )
             result = self.database.run(statement, session)
-            deleted_count = int(result.rowcount)  # type: ignore[arg-type]
+            deleted_count = int(cast(Any, result).rowcount)
             session.commit()
             if deleted_count > 0:
                 extra: dict[str, int | str] = {"deleted_count": deleted_count, "target_domain": self.target_domain}

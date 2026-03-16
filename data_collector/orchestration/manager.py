@@ -16,18 +16,23 @@ from typing import Any
 
 from sqlalchemy import select
 
+from data_collector.dramatiq.broker import DramatiqBroker
+from data_collector.dramatiq.task_dispatcher import TaskDispatcher
 from data_collector.enums import CmdName, FatalFlag
 from data_collector.enums.notifications import AlertSeverity
 from data_collector.enums.runtime import RuntimeExitCode
 from data_collector.messaging.connection import RabbitMQConnection
+from data_collector.messaging.watchservice import IngestEventHandler, WatchService, load_roots_from_database
 from data_collector.notifications.dispatcher import NotificationDispatcher
 from data_collector.notifications.models import Notification
 from data_collector.orchestration.command_handler import CommandHandler, PendingCommand
 from data_collector.orchestration.process_tracker import ProcessTracker, TrackedProcess
 from data_collector.orchestration.retention import RetentionCleaner
 from data_collector.orchestration.scheduler import Scheduler
+from data_collector.settings.dramatiq import TaskDispatcherSettings
 from data_collector.settings.manager import ManagerSettings
 from data_collector.settings.rabbitmq import RabbitMQSettings
+from data_collector.settings.watchservice import WatchServiceSettings
 from data_collector.tables.apps import Apps
 from data_collector.utilities.app_status import update_app_status
 from data_collector.utilities.database.main import Database
@@ -47,6 +52,10 @@ class Manager:
         notification_dispatcher: Optional dispatcher for fatal alerts.
         rabbitmq_connection: Optional RabbitMQ connection for command consumption.
         rabbitmq_settings: Required when ``rabbitmq_connection`` is provided.
+        dramatiq_broker: Optional broker for TaskDispatcher dispatch.
+            When provided, TaskDispatcher starts automatically.
+        watch_service_settings: Optional WatchService configuration.
+        task_dispatcher_settings: Optional TaskDispatcher configuration.
     """
 
     def __init__(
@@ -58,6 +67,9 @@ class Manager:
         notification_dispatcher: NotificationDispatcher | None = None,
         rabbitmq_connection: RabbitMQConnection | None = None,
         rabbitmq_settings: RabbitMQSettings | None = None,
+        dramatiq_broker: DramatiqBroker | None = None,
+        watch_service_settings: WatchServiceSettings | None = None,
+        task_dispatcher_settings: TaskDispatcherSettings | None = None,
     ) -> None:
         self._database = database
         self._settings = settings
@@ -81,6 +93,13 @@ class Manager:
             database, settings, logger=logger,
         )
 
+        # Pipeline services (auto-detected from DB state)
+        self._dramatiq_broker = dramatiq_broker
+        self._watch_service_settings = watch_service_settings
+        self._task_dispatcher_settings = task_dispatcher_settings
+        self._watch_service: WatchService | None = None
+        self._task_dispatcher: TaskDispatcher | None = None
+
         # In-memory failure tracking per app (reset on Manager restart)
         self._failure_counts: dict[str, int] = {}
 
@@ -98,6 +117,12 @@ class Manager:
 
         # Start RabbitMQ consumer if configured
         self._command_handler.start()
+
+        # Auto-detect: WatchService (starts if active WatchRoots exist)
+        self._start_watch_service()
+
+        # Auto-detect: TaskDispatcher (starts if DramatiqBroker is available)
+        self._start_task_dispatcher()
 
         self._logger.info(
             "Manager running (poll=%ds, cmd_poll=%ds, process_check=%ds)",
@@ -364,11 +389,57 @@ class Manager:
             return app
 
     def _shutdown(self) -> None:
-        """Graceful shutdown: stop consumer, terminate all processes."""
+        """Graceful shutdown: stop pipeline services, consumer, terminate all processes."""
         self._logger.info("Manager shutting down")
+
+        # Stop TaskDispatcher first (stop consuming), then WatchService (stop producing)
+        if self._task_dispatcher is not None:
+            self._task_dispatcher.stop()
+            self._logger.info("TaskDispatcher stopped")
+
+        if self._watch_service is not None:
+            self._watch_service.stop()
+            self._logger.info("WatchService stopped")
+
         self._command_handler.stop()
         self._process_tracker.terminate_all(
             exit_code=RuntimeExitCode.MANAGER_EXIT,
             timeout=self._settings.shutdown_timeout,
         )
         self._logger.info("Manager shutdown complete")
+
+    def _start_watch_service(self) -> None:
+        """Start WatchService if active WatchRoots exist in the database."""
+        try:
+            roots = load_roots_from_database(self._database)
+        except Exception:
+            self._logger.exception("Failed to load watch roots from database")
+            return
+
+        if not roots:
+            self._logger.debug("No active watch roots found, WatchService not started")
+            return
+
+        event_handler = IngestEventHandler(self._database)
+        self._watch_service = WatchService(
+            roots,
+            event_handler,
+            settings=self._watch_service_settings,
+            database=self._database,
+        )
+        self._watch_service.start()
+        self._logger.info("WatchService started with %d root(s)", len(roots))
+
+    def _start_task_dispatcher(self) -> None:
+        """Start TaskDispatcher if a DramatiqBroker is available."""
+        if self._dramatiq_broker is None:
+            self._logger.debug("No DramatiqBroker provided, TaskDispatcher not started")
+            return
+
+        self._task_dispatcher = TaskDispatcher(
+            self._database,
+            self._dramatiq_broker,
+            settings=self._task_dispatcher_settings,
+        )
+        self._task_dispatcher.start()
+        self._logger.info("TaskDispatcher started")
