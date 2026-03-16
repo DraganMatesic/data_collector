@@ -51,7 +51,7 @@ class TestAddRoot:
             rel_path="gazette",
             country="HR",
             group="ocr",
-            app_path="data_collector.croatia.gazette.ocr.main",
+            worker_path="data_collector.croatia.gazette.ocr.main",
             ext=".pdf,.zip",
             no_recursive=False,
         )
@@ -63,14 +63,13 @@ class TestAddRoot:
         assert row.root_path == "/ingest/hr/gazette"  # type: ignore[attr-defined]
         assert row.country == "HR"  # type: ignore[attr-defined]
         assert row.watch_group == "ocr"  # type: ignore[attr-defined]
-        assert row.app_path == "data_collector.croatia.gazette.ocr.main"  # type: ignore[attr-defined]
+        assert row.worker_path == "data_collector.croatia.gazette.ocr.main"  # type: ignore[attr-defined]
         assert json.loads(row.extensions) == [".pdf", ".zip"]  # type: ignore[attr-defined]
         assert row.recursive is True  # type: ignore[attr-defined]
         session.commit.assert_called_once()
 
     def test_no_extensions(self) -> None:
         database = _mock_database()
-        session = database.create_session.return_value.__enter__.return_value
         captured: list[object] = []
 
         def capture_add(row: object) -> None:
@@ -84,7 +83,7 @@ class TestAddRoot:
             rel_path="gazette",
             country="HR",
             group="ocr",
-            app_path="data_collector.croatia.gazette.ocr.main",
+            worker_path="data_collector.croatia.gazette.ocr.main",
             ext=None,
             no_recursive=False,
         )
@@ -95,7 +94,6 @@ class TestAddRoot:
 
     def test_no_recursive_flag(self) -> None:
         database = _mock_database()
-        session = database.create_session.return_value.__enter__.return_value
         captured: list[object] = []
 
         def capture_add(row: object) -> None:
@@ -109,7 +107,7 @@ class TestAddRoot:
             rel_path="gazette",
             country="HR",
             group="ocr",
-            app_path="data_collector.croatia.gazette.ocr.main",
+            worker_path="data_collector.croatia.gazette.ocr.main",
             ext=None,
             no_recursive=True,
         )
@@ -125,7 +123,7 @@ class TestAddRoot:
             rel_path="gazette",
             country="HR",
             group="ocr",
-            app_path="data_collector.croatia.gazette.ocr.main",
+            worker_path="data_collector.croatia.gazette.ocr.main",
             ext=None,
             no_recursive=False,
         )
@@ -144,7 +142,6 @@ class TestListRoots:
 
     def test_lists_roots(self, capsys: pytest.CaptureFixture[str]) -> None:
         database = _mock_database()
-        session = database.create_session.return_value.__enter__.return_value
 
         mock_row = MagicMock()
         mock_row.id = 1
@@ -152,7 +149,7 @@ class TestListRoots:
         mock_row.country = "HR"
         mock_row.watch_group = "ocr"
         mock_row.root_path = "/ingest/hr/gazette"
-        mock_row.app_path = "data_collector.croatia.gazette.ocr.main"
+        mock_row.worker_path = "data_collector.croatia.gazette.ocr.main"
         mock_row.extensions = '[".pdf"]'
 
         database.query.return_value.scalars.return_value.all.return_value = [mock_row]
@@ -166,7 +163,6 @@ class TestListRoots:
 
     def test_empty_result(self, capsys: pytest.CaptureFixture[str]) -> None:
         database = _mock_database()
-        session = database.create_session.return_value.__enter__.return_value
         database.query.return_value.scalars.return_value.all.return_value = []
 
         arguments = argparse.Namespace(country=None, group=None)
@@ -200,7 +196,6 @@ class TestRemoveRoot:
 
     def test_not_found_exits(self) -> None:
         database = _mock_database()
-        session = database.create_session.return_value.__enter__.return_value
         database.query.return_value.scalar_one_or_none.return_value = None
 
         arguments = argparse.Namespace(root_id=999)
@@ -245,7 +240,6 @@ class TestActivateDeactivate:
 
     def test_activate_not_found_exits(self) -> None:
         database = _mock_database()
-        session = database.create_session.return_value.__enter__.return_value
         database.query.return_value.scalar_one_or_none.return_value = None
 
         arguments = argparse.Namespace(root_id=999)

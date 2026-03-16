@@ -44,7 +44,7 @@ def _make_root(root_id: int = 1) -> Root:
         rel_path=f"dir{root_id}",
         country="HR",
         watch_group="ocr",
-        app_path="data_collector.croatia.gazette.ocr.main",
+        worker_path="data_collector.croatia.gazette.ocr.main",
     )
 
 

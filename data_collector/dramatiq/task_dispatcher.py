@@ -2,7 +2,7 @@
 
 The ``TaskDispatcher`` polls the ``Events`` table for unprocessed events
 and publishes Dramatiq messages to the correct exchange/queue based on
-each event's ``app_path`` metadata.  Designed to run as a daemon thread
+each event's ``worker_path`` metadata.  Designed to run as a daemon thread
 inside the Manager process.
 
 Thread lifecycle follows the same pattern as
@@ -36,7 +36,7 @@ class TaskDispatcher:
     The dispatcher runs as a daemon thread inside the Manager process.
     It queries for events that have no matching ``EventProcessingStatus``
     row (i.e. have not yet been dispatched), dynamically imports the
-    event's ``app_path`` module to retrieve the ``TopicExchangeQueue``
+    event's ``worker_path`` module to retrieve the ``TopicExchangeQueue``
     definition, creates a Dramatiq message, publishes it, and records
     the dispatch in ``EventProcessingStatus``.
 
@@ -185,7 +185,7 @@ class TaskDispatcher:
     def _dispatch_event(self, event: Events, session: Session) -> bool:
         """Dispatch a single event to the correct Dramatiq actor.
 
-        Dynamically imports the module at ``event.app_path`` and reads
+        Dynamically imports the module at ``event.worker_path`` and reads
         the ``MAIN_EXCHANGE_QUEUE`` constant (a ``TopicExchangeQueue``)
         to determine the target exchange, queue, and routing key.
 
@@ -197,7 +197,7 @@ class TaskDispatcher:
             True if the event was successfully dispatched.
         """
         try:
-            module = importlib.import_module(str(event.app_path))
+            module = importlib.import_module(str(event.worker_path))
             queue_definition: TopicExchangeQueue = cast(Any, module).MAIN_EXCHANGE_QUEUE
 
             message = cast(Any, self._broker).create_message(
@@ -228,12 +228,12 @@ class TaskDispatcher:
             return True
 
         except ImportError:
-            logger.error("Could not import app_path module: %s (event_id=%s)", event.app_path, event.id)
+            logger.error("Could not import worker_path module: %s (event_id=%s)", event.worker_path, event.id)
             return False
         except AttributeError:
             logger.error(
                 "Module '%s' has no MAIN_EXCHANGE_QUEUE constant (event_id=%s)",
-                event.app_path,
+                event.worker_path,
                 event.id,
             )
             return False

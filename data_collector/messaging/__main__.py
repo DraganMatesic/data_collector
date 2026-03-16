@@ -41,7 +41,7 @@ def _add_root(arguments: argparse.Namespace, database: Database) -> None:
             rel_path=arguments.rel_path,
             country=arguments.country,
             watch_group=arguments.group,
-            app_path=arguments.app_path,
+            worker_path=arguments.worker_path,
             extensions=extensions_json,
             recursive=not arguments.no_recursive,
         )
@@ -68,7 +68,7 @@ def _list_roots(arguments: argparse.Namespace, database: Database) -> None:
         print("No watch roots found.")
         return
 
-    header = f"{'ID':>5}  {'Active':>6}  {'Country':>7}  {'Group':<15}  {'Path':<40}  {'App Path':<50}  {'Ext'}"
+    header = f"{'ID':>5}  {'Active':>6}  {'Country':>7}  {'Group':<15}  {'Path':<40}  {'Worker Path':<50}  {'Ext'}"
     print(header)
     print("-" * len(header))
     for row in rows:
@@ -77,7 +77,7 @@ def _list_roots(arguments: argparse.Namespace, database: Database) -> None:
         extensions_display = str(record.extensions) if record.extensions is not None else ""
         print(
             f"{record.id:>5}  {active_marker:>6}  {record.country:>7}  {str(record.watch_group):<15}  "
-            f"{str(record.root_path):<40}  {str(record.app_path):<50}  {extensions_display}"
+            f"{str(record.root_path):<40}  {str(record.worker_path):<50}  {extensions_display}"
         )
 
 
@@ -137,7 +137,7 @@ def main() -> None:
     add_parser.add_argument("--rel-path", required=True, help="Relative path identifier for routing")
     add_parser.add_argument("--country", required=True, help="Country code (e.g., HR)")
     add_parser.add_argument("--group", required=True, help="Watch group (e.g., ocr, ingest)")
-    add_parser.add_argument("--app-path", required=True, help="Python module path for Dramatiq actor import")
+    add_parser.add_argument("--worker-path", required=True, help="Python module path for Dramatiq actor import")
     add_parser.add_argument("--ext", default=None, help="Comma-separated allowed extensions (e.g., .pdf,.zip)")
     add_parser.add_argument("--no-recursive", action="store_true", help="Do not watch subdirectories")
 

@@ -24,6 +24,8 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy import false as sa_false
+from sqlalchemy import true as sa_true
 from sqlalchemy.sql import func
 
 from data_collector.tables.shared import Base
@@ -57,13 +59,13 @@ class Events(Base):
 
     Any producer (WatchService, scraper, API, manual INSERT) writes an event
     row.  The TaskDispatcher polls for unprocessed events and publishes
-    Dramatiq messages to the correct exchange/queue based on ``app_path``.
+    Dramatiq messages to the correct exchange/queue based on ``worker_path``.
     """
 
     __tablename__ = "events"
 
     id = auto_increment_column()
-    app_path = Column(
+    worker_path = Column(
         String(512),
         nullable=False,
         comment="Python module path for dynamic import of TopicExchangeQueue definition",
@@ -77,11 +79,11 @@ class Events(Base):
     watch_group = Column(String(128), nullable=False, index=True, comment="Logical watch group (e.g. ocr, ingest)")
     file_size = Column(BigInteger, nullable=True, comment="Final file size in bytes (set on stabilization)")
     stable = Column(
-        Boolean, nullable=True, server_default=text("1"), comment="False while streaming, True when stable",
+        Boolean, nullable=True, server_default=sa_true(), comment="False while streaming, True when stable",
     )
     stabilized_date = Column(DateTime, nullable=True, comment="When file became stable")
     corrupted = Column(
-        Boolean, nullable=True, server_default=text("0"), comment="True if worker detected file corruption",
+        Boolean, nullable=True, server_default=sa_false(), comment="True if worker detected file corruption",
     )
     destination_path = Column(Text, nullable=True, comment="Permanent storage path after worker moves file")
     app_id = Column(String(64), index=True, nullable=True, comment="Producer application identifier")
@@ -93,7 +95,7 @@ class WatchRoots(Base):
     """Persistent configuration for watched directory roots.
 
     Each row defines a directory that WatchService monitors for new files.
-    The ``app_path`` links detected events to the Dramatiq actor module
+    The ``worker_path`` links detected events to the Dramatiq actor module
     that processes them.  Rows with ``active=True`` and ``archive IS NULL``
     are loaded on startup and periodically refreshed at runtime.
     """
@@ -105,11 +107,11 @@ class WatchRoots(Base):
     rel_path = Column(String(512), nullable=False, comment="Relative path identifier for routing")
     country = Column(String(8), nullable=False, index=True, comment="Country code for pipeline routing")
     watch_group = Column(String(128), nullable=False, index=True, comment="Logical watch group (e.g. ocr, ingest)")
-    app_path = Column(String(512), nullable=False, comment="Python module path for Dramatiq actor import")
+    worker_path = Column(String(512), nullable=False, comment="Python module path for Dramatiq actor import")
     extensions = Column(Text, nullable=True, comment="JSON array of allowed extensions (e.g. [\".pdf\", \".zip\"])")
-    recursive = Column(Boolean, nullable=False, server_default=text("1"), comment="Whether to watch subdirectories")
+    recursive = Column(Boolean, nullable=False, server_default=sa_true(), comment="Whether to watch subdirectories")
     active = Column(
-        Boolean, nullable=False, server_default=text("1"), comment="Whether this root is currently monitored",
+        Boolean, nullable=False, server_default=sa_true(), comment="Whether this root is currently monitored",
     )
     archive = Column(DateTime, nullable=True, comment="Soft delete timestamp")
     date_created = Column(DateTime, server_default=func.now())

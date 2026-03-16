@@ -58,7 +58,7 @@ def _run_manager() -> None:
     # Logging
     log_settings = LogSettings()
     service = LoggingService(
-        "orchestration.manager",
+        "data_collector",
         settings=log_settings,
         db_engine=database.engine,
     )

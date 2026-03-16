@@ -36,7 +36,7 @@ def _make_root(**overrides: object) -> Root:
         "rel_path": "gazette",
         "country": "HR",
         "watch_group": "ocr",
-        "app_path": "data_collector.croatia.gazette.ocr.main",
+        "worker_path": "data_collector.croatia.gazette.ocr.main",
     }
     defaults.update(overrides)
     return Root(**defaults)  # type: ignore[arg-type]
@@ -108,7 +108,7 @@ class TestRootDataclass:
         assert root.root_path == "/ingest/hr/gazette"
         assert root.country == "HR"
         assert root.watch_group == "ocr"
-        assert root.app_path == "data_collector.croatia.gazette.ocr.main"
+        assert root.worker_path == "data_collector.croatia.gazette.ocr.main"
 
     def test_defaults(self) -> None:
         root = _make_root()
@@ -155,7 +155,7 @@ class TestWatchServiceSettings:
         assert settings.poll_interval == 5
         assert settings.reconcile_interval == 60
         assert settings.debounce == 2.0
-        assert settings.stability_timeout == 60
+        assert settings.stability_timeout == 10
         assert settings.stabilization_grace == 5
         assert settings.watched_dirs_root == "./watched"
         assert settings.writer_batch_size == 50
@@ -213,44 +213,113 @@ class TestExtensionFiltering:
 
 
 # ---------------------------------------------------------------------------
+# TestTempFileFiltering
+# ---------------------------------------------------------------------------
+
+
+class TestTempFileFiltering:
+    """Test WatchService._is_temp_file."""
+
+    def test_office_lock_file(self) -> None:
+        assert WatchService._is_temp_file("/ingest/~$document.xlsx") is True
+
+    def test_tilde_temp_file(self) -> None:
+        assert WatchService._is_temp_file("/ingest/~document.tmp") is True
+
+    def test_libreoffice_lock_file(self) -> None:
+        assert WatchService._is_temp_file("/ingest/.~lock.document.xlsx#") is True
+
+    def test_normal_file_not_filtered(self) -> None:
+        assert WatchService._is_temp_file("/ingest/report.xlsx") is False
+
+    def test_normal_pdf_not_filtered(self) -> None:
+        assert WatchService._is_temp_file("/ingest/gazette/2024/doc.pdf") is False
+
+
+# ---------------------------------------------------------------------------
 # TestFileStability
 # ---------------------------------------------------------------------------
 
 
-class TestFileStability:
-    """Test WatchService._is_stable."""
+class TestStabilityMonitorLogic:
+    """Test stability tracking via last_size / last_changed in pending entries."""
 
-    @patch("data_collector.messaging.watchservice.time.sleep")
-    @patch("data_collector.messaging.watchservice.os.path.getsize")
-    def test_stable_file(self, mock_getsize: MagicMock, mock_sleep: MagicMock) -> None:
-        mock_getsize.side_effect = [1024, 1024]
-        root = _make_root()
-        service = WatchService([root], MockEventHandler(), WatchServiceSettings(debounce=1.0))
-        assert service._is_stable("/test/file.pdf") is True
-        mock_sleep.assert_called_once_with(0.5)
+    def test_size_change_resets_last_changed(self) -> None:
+        root = _make_root(root_path="/ingest/hr/gazette")
+        handler = MockEventHandler()
+        settings = WatchServiceSettings(stability_timeout=10)
+        service = WatchService([root], handler, settings)
 
-    @patch("data_collector.messaging.watchservice.time.sleep")
-    @patch("data_collector.messaging.watchservice.os.path.getsize")
-    def test_growing_file(self, mock_getsize: MagicMock, mock_sleep: MagicMock) -> None:
-        mock_getsize.side_effect = [1024, 2048]
-        root = _make_root()
-        service = WatchService([root], MockEventHandler(), WatchServiceSettings(debounce=1.0))
-        assert service._is_stable("/test/file.pdf") is False
+        normalized = WatchService._normalize_path("/ingest/hr/gazette/test.pdf")
+        service._pending_stability[normalized] = {
+            "root": root, "event_type": EventType.CREATED, "event_id": 1,
+            "last_size": 1024, "last_changed": time.monotonic() - 20,
+        }
 
-    @patch("data_collector.messaging.watchservice.os.path.getsize")
-    def test_missing_file(self, mock_getsize: MagicMock) -> None:
-        mock_getsize.side_effect = OSError("No such file")
-        root = _make_root()
-        service = WatchService([root], MockEventHandler(), WatchServiceSettings(debounce=1.0))
-        assert service._is_stable("/test/file.pdf") is False
+        # File grew -- last_changed should reset even though 20s elapsed
+        with patch("data_collector.messaging.watchservice.os.path.getsize", return_value=2048):
+            with service._pending_lock:
+                snapshot = dict(service._pending_stability)
+            # Simulate one monitor cycle (inline, not threaded)
+            for path, info in snapshot.items():
+                current_size = os.path.getsize(path)
+                if current_size != info["last_size"]:
+                    service._pending_stability[path]["last_size"] = current_size
+                    service._pending_stability[path]["last_changed"] = time.monotonic()
 
-    @patch("data_collector.messaging.watchservice.time.sleep")
-    @patch("data_collector.messaging.watchservice.os.path.getsize")
-    def test_zero_size_file(self, mock_getsize: MagicMock, mock_sleep: MagicMock) -> None:
-        mock_getsize.side_effect = [0, 0]
-        root = _make_root()
-        service = WatchService([root], MockEventHandler(), WatchServiceSettings(debounce=1.0))
-        assert service._is_stable("/test/file.pdf") is False
+        assert service._pending_stability[normalized]["last_size"] == 2048
+        # last_changed was just reset, so it should be very recent
+        assert time.monotonic() - service._pending_stability[normalized]["last_changed"] < 1.0
+
+    def test_unchanged_size_below_timeout_not_stabilized(self) -> None:
+        root = _make_root(root_path="/ingest/hr/gazette")
+        handler = MockEventHandler()
+        settings = WatchServiceSettings(stability_timeout=10)
+        service = WatchService([root], handler, settings)
+
+        normalized = WatchService._normalize_path("/ingest/hr/gazette/test.pdf")
+        service._pending_stability[normalized] = {
+            "root": root, "event_type": EventType.CREATED, "event_id": 1,
+            "last_size": 1024, "last_changed": time.monotonic(),  # just now
+        }
+
+        # Size unchanged but timeout not reached -- should NOT stabilize
+        assert service._write_queue.empty()
+
+    @patch("data_collector.messaging.watchservice.WatchService._create_observer")
+    @patch("data_collector.messaging.watchservice.WatchService._recover_pending_streams")
+    @patch("data_collector.messaging.watchservice.WatchService._reconcile")
+    def test_unchanged_size_past_timeout_stabilizes(
+        self,
+        mock_reconcile: MagicMock,
+        mock_recover: MagicMock,
+        mock_observer: MagicMock,
+    ) -> None:
+        mock_observer.return_value = MagicMock()
+        root = _make_root(root_path="/ingest/hr/gazette")
+        handler = MockEventHandler()
+        settings = WatchServiceSettings(stability_timeout=1, debounce=0.1)
+        service = WatchService([root], handler, settings)
+        service.start()
+
+        try:
+            # Inject a pending entry that has been unchanged for longer than timeout
+            normalized = WatchService._normalize_path("/ingest/hr/gazette/test.pdf")
+            with service._pending_lock:
+                service._pending_stability[normalized] = {
+                    "root": root, "event_type": EventType.CREATED, "event_id": 1,
+                    "last_size": 1024, "last_changed": time.monotonic() - 5,
+                }
+
+            # Give the stability monitor time to detect and stabilize
+            with patch("data_collector.messaging.watchservice.os.path.getsize", return_value=1024):
+                time.sleep(0.5)
+
+            # Handler should have received the stabilization
+            assert len(handler.stabilized) == 1
+            assert handler.stabilized[0] == (1, 1024)
+        finally:
+            service.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +424,8 @@ class TestHandlePathModified:
         # Simulate pending stability
         normalized = WatchService._normalize_path("/ingest/hr/gazette/test.pdf")
         service._pending_stability[normalized] = {
-            "root": root, "event_type": EventType.CREATED, "event_id": 1, "first_seen": time.monotonic(),
+            "root": root, "event_type": EventType.CREATED, "event_id": 1,
+            "last_size": -1, "last_changed": time.monotonic(),
         }
 
         service.handle_path("/ingest/hr/gazette/test.pdf", EventType.MODIFIED)
@@ -392,7 +462,8 @@ class TestWriterThread:
         event_data = _make_event_data(stable=False)
         normalized = WatchService._normalize_path("/ingest/hr/gazette/test.pdf")
         service._pending_stability[normalized] = {
-            "root": root, "event_type": EventType.CREATED, "event_id": None, "first_seen": time.monotonic(),
+            "root": root, "event_type": EventType.CREATED, "event_id": None,
+            "last_size": -1, "last_changed": time.monotonic(),
         }
 
         command = DetectCommand(event_data=event_data, normalized_path=normalized)
@@ -591,7 +662,7 @@ class TestIngestEventHandler:
         mock_database.add.assert_called_once()
         mock_session.commit.assert_called_once()
 
-    def test_on_event_detected_sets_app_path(self) -> None:
+    def test_on_event_detected_sets_worker_path(self) -> None:
         mock_database = MagicMock()
         mock_session = MagicMock()
         mock_database.create_session.return_value.__enter__ = MagicMock(return_value=mock_session)
@@ -612,7 +683,7 @@ class TestIngestEventHandler:
 
         assert len(captured_events) == 1
         created_event = captured_events[0]
-        assert created_event.app_path == "data_collector.croatia.gazette.ocr.main"  # type: ignore[attr-defined]
+        assert created_event.worker_path == "data_collector.croatia.gazette.ocr.main"  # type: ignore[attr-defined]
 
     def test_on_event_stabilized_updates_row(self) -> None:
         mock_database = MagicMock()
@@ -769,7 +840,7 @@ def _make_watch_roots_row(
     rel_path: str = "gazette",
     country: str = "HR",
     watch_group: str = "ocr",
-    app_path: str = "data_collector.croatia.gazette.ocr.main",
+    worker_path: str = "data_collector.croatia.gazette.ocr.main",
     extensions: str | None = '[".pdf", ".zip"]',
     recursive: bool = True,
     active: bool = True,
@@ -781,7 +852,7 @@ def _make_watch_roots_row(
     row.rel_path = rel_path
     row.country = country
     row.watch_group = watch_group
-    row.app_path = app_path
+    row.worker_path = worker_path
     row.extensions = extensions
     row.recursive = recursive
     row.active = active
@@ -807,7 +878,7 @@ class TestLoadRootsFromDatabase:
         assert roots[0].root_path == "/ingest/hr/gazette"
         assert roots[0].country == "HR"
         assert roots[0].watch_group == "ocr"
-        assert roots[0].app_path == "data_collector.croatia.gazette.ocr.main"
+        assert roots[0].worker_path == "data_collector.croatia.gazette.ocr.main"
 
     def test_parses_extensions_json(self) -> None:
         mock_database = MagicMock()
@@ -908,8 +979,10 @@ class TestRootHotReload:
         old_watch = MagicMock()
         service._watches[normalized] = old_watch
 
-        # Change app_path
-        changed_root = _make_root(root_id=1, root_path="/ingest/hr/gazette", app_path="data_collector.new.module.main")
+        # Change worker_path
+        changed_root = _make_root(
+            root_id=1, root_path="/ingest/hr/gazette", worker_path="data_collector.new.module.main",
+        )
         with patch(
             "data_collector.messaging.watchservice.load_roots_from_database",
             return_value=[changed_root],
@@ -917,7 +990,7 @@ class TestRootHotReload:
             service._refresh_roots()
 
         service._observer.unschedule.assert_called_once_with(old_watch)
-        assert service._roots[normalized].app_path == "data_collector.new.module.main"
+        assert service._roots[normalized].worker_path == "data_collector.new.module.main"
 
     def test_no_database_skips_refresh(self) -> None:
         root = _make_root()

@@ -33,9 +33,10 @@ from data_collector.settings.dramatiq import TaskDispatcherSettings
 from data_collector.settings.manager import ManagerSettings
 from data_collector.settings.rabbitmq import RabbitMQSettings
 from data_collector.settings.watchservice import WatchServiceSettings
-from data_collector.tables.apps import Apps
+from data_collector.tables.apps import AppGroups, AppParents, Apps
 from data_collector.utilities.app_status import update_app_status
 from data_collector.utilities.database.main import Database
+from data_collector.utilities.functions.runtime import get_app_id
 
 
 class Manager:
@@ -408,6 +409,46 @@ class Manager:
         )
         self._logger.info("Manager shutdown complete")
 
+    def _register_service_app(self, service_name: str) -> str:
+        """Register a framework service as an app in the Apps hierarchy.
+
+        Uses the convention ``group="data_collector"``, ``parent=service_name``,
+        ``name=service_name`` for internal services.
+
+        Args:
+            service_name: Service identifier (e.g., "watchservice", "task_dispatcher").
+
+        Returns:
+            The computed app_id (64-char SHA-256 hex).
+        """
+        group = "data_collector"
+        app_id = get_app_id(group, service_name, service_name)
+
+        with self._database.create_session() as session:
+            existing_group = self._database.query(
+                select(AppGroups).where(AppGroups.name == group), session,
+            ).scalar_one_or_none()
+            if existing_group is None:
+                self._database.add(AppGroups(name=group), session)
+                session.flush()
+
+            existing_parent = self._database.query(
+                select(AppParents).where(AppParents.name == service_name, AppParents.group_name == group), session,
+            ).scalar_one_or_none()
+            if existing_parent is None:
+                self._database.add(AppParents(name=service_name, group_name=group), session)
+                session.flush()
+
+            session.merge(Apps(
+                app=app_id,
+                group_name=group,
+                parent_name=service_name,
+                app_name=service_name,
+            ))
+            session.commit()
+
+        return app_id
+
     def _start_watch_service(self) -> None:
         """Start WatchService if active WatchRoots exist in the database."""
         try:
@@ -420,7 +461,8 @@ class Manager:
             self._logger.debug("No active watch roots found, WatchService not started")
             return
 
-        event_handler = IngestEventHandler(self._database)
+        watch_service_app_id = self._register_service_app("watchservice")
+        event_handler = IngestEventHandler(self._database, app_id=watch_service_app_id)
         self._watch_service = WatchService(
             roots,
             event_handler,
@@ -436,6 +478,7 @@ class Manager:
             self._logger.debug("No DramatiqBroker provided, TaskDispatcher not started")
             return
 
+        self._register_service_app("task_dispatcher")
         self._task_dispatcher = TaskDispatcher(
             self._database,
             self._dramatiq_broker,

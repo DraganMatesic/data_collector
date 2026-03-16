@@ -15,8 +15,8 @@ class WatchServiceSettings(BaseSettings):
         observer: ``DC_WATCHER_OBSERVER`` -- Observer type: ``auto`` (native OS API) or ``polling`` (fallback).
         poll_interval: ``DC_WATCHER_POLL_INTERVAL`` -- Polling interval in seconds (PollingObserver only).
         reconcile_interval: ``DC_WATCHER_RECONCILE_INTERVAL`` -- Seconds between reconciliation directory scans.
-        debounce: ``DC_WATCHER_DEBOUNCE`` -- Seconds for file stability debounce (size-check-twice delay).
-        stability_timeout: ``DC_WATCHER_STABILITY_TIMEOUT`` -- Max seconds to wait for an unstable file.
+        debounce: ``DC_WATCHER_DEBOUNCE`` -- Seconds between stability monitor check cycles.
+        stability_timeout: ``DC_WATCHER_STABILITY_TIMEOUT`` -- Seconds of unchanged file size before declaring stable.
         stabilization_grace: ``DC_WATCHER_STABILIZATION_GRACE`` -- Grace seconds after stabilization to ignore MODIFIED.
         watched_dirs_root: ``DC_WATCHER_WATCHED_DIRS_ROOT`` -- Base directory containing watched subdirectories.
         writer_batch_size: ``DC_WATCHER_WRITER_BATCH_SIZE`` -- Maximum events per writer thread batch.
@@ -38,7 +38,7 @@ class WatchServiceSettings(BaseSettings):
     poll_interval: int = 5
     reconcile_interval: int = 60
     debounce: float = 2.0
-    stability_timeout: int = 60
+    stability_timeout: int = 10
     stabilization_grace: int = 5
     watched_dirs_root: str = "./watched"
     writer_batch_size: int = 50

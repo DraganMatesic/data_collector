@@ -86,7 +86,7 @@ def load_roots_from_database(database: Database) -> list[Root]:
                 rel_path=str(record.rel_path),
                 country=str(record.country),
                 watch_group=str(record.watch_group),
-                app_path=str(record.app_path),
+                worker_path=str(record.worker_path),
                 extensions=parsed_extensions,
                 recursive=bool(record.recursive),
             )
@@ -109,7 +109,7 @@ class Root:
         rel_path: Relative path identifier for routing.
         country: Country code for pipeline routing (e.g., "HR").
         watch_group: Logical grouping (e.g., "ocr", "ingest").
-        app_path: Python module path for Dramatiq actor import (e.g.,
+        worker_path: Python module path for Dramatiq actor import (e.g.,
             "data_collector.croatia.gazette.ocr.main").  TaskDispatcher
             dynamically imports this module to read ``MAIN_EXCHANGE_QUEUE``.
         extensions: Allowed file extensions (None = all files).
@@ -121,7 +121,7 @@ class Root:
     rel_path: str
     country: str
     watch_group: str
-    app_path: str
+    worker_path: str
     extensions: list[str] | None = None
     recursive: bool = True
 
@@ -235,22 +235,29 @@ class IngestEventHandler(EventHandler):
 
     Args:
         database: Database instance for session creation.
+        app_id: Producer application identifier written to every Events row.
     """
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, app_id: str | None = None) -> None:
         self.database = database
+        self.app_id = app_id
 
     def on_event_detected(self, event_data: EventData) -> int:
         """Create an Events row for a detected file.
 
         If the event is immediately stable, ``stabilized_date`` is set to now.
         If unstable (streaming), ``stabilized_date`` is left as None.
+        ``document_type`` is derived from the file extension.
         """
         now = datetime.now(UTC)
+        _, extension = os.path.splitext(event_data.abs_path)
+        document_type = extension.lstrip(".").lower() if extension else None
+
         with self.database.create_session() as session:
             event = Events(
-                app_path=event_data.root_data.app_path,
+                worker_path=event_data.root_data.worker_path,
                 file_path=event_data.abs_path,
+                document_type=document_type,
                 event_type=event_data.event_type,
                 path_hash=event_data.path_hash,
                 country=event_data.root_data.country,
@@ -258,6 +265,7 @@ class IngestEventHandler(EventHandler):
                 file_size=event_data.file_size,
                 stable=event_data.stable,
                 stabilized_date=now if event_data.stable else None,
+                app_id=self.app_id,
             )
             self.database.add(event, session)
             session.commit()
@@ -514,6 +522,9 @@ class WatchService:
         if root is None:
             return
 
+        if self._is_temp_file(normalized_path):
+            return
+
         if root.extensions and not self._is_allowed(normalized_path, root.extensions):
             return
 
@@ -527,7 +538,8 @@ class WatchService:
                     "root": root,
                     "event_type": event_type,
                     "event_id": None,
-                    "first_seen": time.monotonic(),
+                    "last_size": -1,
+                    "last_changed": time.monotonic(),
                 }
 
             event_data = EventData(
@@ -626,7 +638,8 @@ class WatchService:
                         "root": command.event_data.root_data,
                         "event_type": EventType.CREATED,
                         "event_id": None,
-                        "first_seen": time.monotonic(),
+                        "last_size": -1,
+                    "last_changed": time.monotonic(),
                     }
                 detect_data = EventData(
                     abs_path=command.event_data.abs_path,
@@ -652,14 +665,23 @@ class WatchService:
     # ------------------------------------------------------------------
 
     def _monitor_stability(self) -> None:
-        """Background thread checking deferred files until stable or timed out."""
+        """Background thread checking deferred files until size stops changing.
+
+        On each cycle the monitor reads the current file size for every
+        pending entry.  If the size changed since the last check, the
+        ``last_changed`` timestamp is reset.  When the size has not changed
+        for ``stability_timeout`` seconds (default 10), the file is
+        declared stable.  Files that disappear from disk are stabilized
+        immediately with ``file_size=None``.
+        """
         while not self._stop_event.is_set():
             # Phase 1: snapshot pending items under lock (fast)
             with self._pending_lock:
                 snapshot = dict(self._pending_stability)
 
-            # Phase 2: check stability outside lock (may sleep in _is_stable)
+            # Phase 2: check sizes outside lock (no sleep, just stat calls)
             completed_paths: list[str] = []
+            size_updates: dict[str, dict[str, int | float]] = {}
             now = time.monotonic()
 
             for normalized_path, info in snapshot.items():
@@ -667,54 +689,39 @@ class WatchService:
                 if event_id is None:
                     continue  # Writer hasn't processed DetectCommand yet
 
-                elapsed = now - info["first_seen"]
-
-                if elapsed > self._stability_timeout:
-                    # Timeout -- stabilize anyway (no data loss)
-                    try:
-                        file_size = os.path.getsize(normalized_path) if os.path.exists(normalized_path) else None
-                    except OSError:
-                        file_size = None
-                    self._write_queue.put(StabilizeCommand(event_id=event_id, file_size=file_size))
+                try:
+                    current_size = os.path.getsize(normalized_path)
+                except OSError:
+                    # File disappeared -- stabilize with unknown size
+                    self._write_queue.put(StabilizeCommand(event_id=event_id, file_size=None))
                     completed_paths.append(normalized_path)
-                    logger.warning(
-                        "Stability timeout for %s, processing anyway (event_id=%d)",
-                        normalized_path,
-                        event_id,
-                    )
+                    continue
 
-                elif self._is_stable(normalized_path):
-                    try:
-                        file_size = os.path.getsize(normalized_path)
-                    except OSError:
-                        file_size = None
-                    self._write_queue.put(StabilizeCommand(event_id=event_id, file_size=file_size))
+                last_size = info["last_size"]
+                last_changed = info["last_changed"]
+
+                if current_size != last_size:
+                    # File still growing -- reset the clock
+                    size_updates[normalized_path] = {
+                        "last_size": current_size,
+                        "last_changed": now,
+                    }
+                elif current_size > 0 and (now - last_changed) >= self._stability_timeout:
+                    # Size unchanged for stability_timeout seconds -- stable
+                    self._write_queue.put(StabilizeCommand(event_id=event_id, file_size=current_size))
                     completed_paths.append(normalized_path)
 
-            # Phase 3: remove completed paths under lock
-            if completed_paths:
+            # Phase 3: update sizes and remove completed under lock
+            if size_updates or completed_paths:
                 with self._pending_lock:
+                    for path, updates in size_updates.items():
+                        if path in self._pending_stability:
+                            self._pending_stability[path]["last_size"] = updates["last_size"]
+                            self._pending_stability[path]["last_changed"] = updates["last_changed"]
                     for path in completed_paths:
                         self._pending_stability.pop(path, None)
 
             self._stop_event.wait(timeout=self._debounce)
-
-    def _is_stable(self, file_path: str) -> bool:
-        """Check if a file has finished writing (size stable between two checks).
-
-        Args:
-            file_path: Absolute path to the file.
-
-        Returns:
-            True if file size is unchanged between two checks and non-zero.
-        """
-        try:
-            size_first = os.path.getsize(file_path)
-            time.sleep(self._debounce / 2)
-            size_second = os.path.getsize(file_path)
-            return size_first == size_second and size_first > 0
-        except OSError:
-            return False
 
     # ------------------------------------------------------------------
     # Reconciliation
@@ -780,7 +787,7 @@ class WatchService:
             old_root = self._roots[common_key]
             new_root = fresh_map[common_key]
             if (
-                old_root.app_path != new_root.app_path
+                old_root.worker_path != new_root.worker_path
                 or old_root.extensions != new_root.extensions
                 or old_root.recursive != new_root.recursive
                 or old_root.country != new_root.country
@@ -820,6 +827,8 @@ class WatchService:
                 if self._stop_event.is_set():
                     return
                 if not file_path.is_file():
+                    continue
+                if self._is_temp_file(str(file_path)):
                     continue
                 if root.extensions and file_path.suffix.lower() not in root.extensions:
                     continue
@@ -871,7 +880,8 @@ class WatchService:
                         "root": root,
                         "event_type": EventType.CREATED,
                         "event_id": None,
-                        "first_seen": time.monotonic(),
+                        "last_size": -1,
+                    "last_changed": time.monotonic(),
                     }
                 event_data = EventData(
                     abs_path=abs_path,
@@ -924,7 +934,8 @@ class WatchService:
                         "root": root,
                         "event_type": EventType.CREATED,
                         "event_id": event_id,
-                        "first_seen": time.monotonic(),
+                        "last_size": -1,
+                    "last_changed": time.monotonic(),
                     }
                 recovered_count += 1
             else:
@@ -1000,6 +1011,24 @@ class WatchService:
                 best_length = len(root_path)
 
         return best_match
+
+    @staticmethod
+    def _is_temp_file(file_path: str) -> bool:
+        """Check if a file is a temporary or lock file that should be skipped.
+
+        Matches patterns created by common applications:
+        - ``~$document.xlsx`` (Microsoft Office lock files)
+        - ``~document.tmp`` (general temp files with tilde prefix)
+        - ``.~lock.document#`` (LibreOffice lock files)
+
+        Args:
+            file_path: Normalized path to check.
+
+        Returns:
+            True if the filename matches a known temp/lock file pattern.
+        """
+        filename = os.path.basename(file_path)
+        return filename.startswith(("~$", "~", ".~"))
 
     @staticmethod
     def _is_allowed(file_path: str, extensions: list[str]) -> bool:

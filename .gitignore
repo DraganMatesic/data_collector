@@ -14,3 +14,5 @@ code-workspace
 CLAUDE.md
 memory
 error.log
+data_collector/examples/watchservice/_watched_*/
+data_collector/examples/watchservice/_worker_output.log

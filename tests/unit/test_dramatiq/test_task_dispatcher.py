@@ -113,10 +113,10 @@ class TestDispatchBatch:
         # Mock events
         mock_event_1 = MagicMock()
         mock_event_1.id = 1
-        mock_event_1.app_path = "some.module"
+        mock_event_1.worker_path = "some.module"
         mock_event_2 = MagicMock()
         mock_event_2.id = 2
-        mock_event_2.app_path = "some.module"
+        mock_event_2.worker_path = "some.module"
 
         mock_session = MagicMock()
         # First query: COUNT query returns 2
@@ -156,7 +156,7 @@ class TestDispatchEvent:
 
         mock_event = MagicMock()
         mock_event.id = 42
-        mock_event.app_path = "some.topic.module"
+        mock_event.worker_path = "some.topic.module"
 
         mock_session = MagicMock()
 
@@ -176,7 +176,7 @@ class TestDispatchEvent:
 
         mock_event = MagicMock()
         mock_event.id = 1
-        mock_event.app_path = "bad.module"
+        mock_event.worker_path = "bad.module"
 
         mock_session = MagicMock()
 
@@ -192,7 +192,7 @@ class TestDispatchEvent:
 
         mock_event = MagicMock()
         mock_event.id = 1
-        mock_event.app_path = "some.module"
+        mock_event.worker_path = "some.module"
 
         mock_session = MagicMock()
 
@@ -212,7 +212,7 @@ class TestDispatchEvent:
 
         mock_event = MagicMock()
         mock_event.id = 1
-        mock_event.app_path = "some.module"
+        mock_event.worker_path = "some.module"
 
         mock_session = MagicMock()
 
