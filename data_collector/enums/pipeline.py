@@ -21,3 +21,11 @@ class PipelineStage(IntEnum):
     PROCESS = 2
     VALIDATE = 3
     LOAD = 4
+
+
+class EventType(IntEnum):
+    """Type of file system event detected by WatchService."""
+
+    CREATED = 1
+    MODIFIED = 2
+    DELETED = 3

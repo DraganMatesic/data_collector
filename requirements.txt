@@ -18,4 +18,5 @@ zeep>=4.3.2
 tldextract>=5.1.0
 croniter>=1.4.1
 dramatiq[rabbitmq]>=2.1.0
+watchdog>=6.0.0
 pywin32>=310; sys_platform == "win32"

@@ -77,6 +77,8 @@ disable = [
     "C0325",   # superfluous-parens — false positive on chained comparisons
     "C0414",   # useless-import-alias — PEP 484 explicit re-export pattern (X as X)
     "C0415",   # import-outside-toplevel — circular import guards in database module
+    # Convention: SQLAlchemy false positives
+    "C0121",   # singleton-comparison — SQLAlchemy WHERE clauses require `== True` not `is True`
     # Error: SQLAlchemy false positives
     "E0213",   # no-self-argument — @declared_attr / @hybrid_property
     "E1101",   # no-member — SQLAlchemy metaclass (__table__)
