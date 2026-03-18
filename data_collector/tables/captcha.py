@@ -13,7 +13,7 @@ codebook tables seeded from the corresponding IntEnums in
 ``data_collector.enums.captcha``.
 """
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, ForeignKey, Index, String, Text, text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, ForeignKey, Index, String, UnicodeText, text
 from sqlalchemy.sql import func
 
 from data_collector.tables.shared import Base
@@ -27,8 +27,8 @@ class CodebookCaptchaSolveStatus(Base):
     id = Column(BigInteger, primary_key=True, comment="Solve status ID")
     description = Column(String(128), comment="Solve status description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CodebookCaptchaErrorCategory(Base):
@@ -38,8 +38,8 @@ class CodebookCaptchaErrorCategory(Base):
     id = Column(BigInteger, primary_key=True, comment="Error category ID")
     description = Column(String(128), comment="Error category description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CaptchaLog(Base):
@@ -68,7 +68,7 @@ class CaptchaLog(Base):
     provider_name = Column(String(64), nullable=False)
     task_id = Column(String(128), nullable=False)
     task_type = Column(String(32), nullable=False)
-    page_url = Column(Text, nullable=False)
+    page_url = Column(UnicodeText, nullable=False)
     cost: Column[float] = Column(Float, server_default=text("0"), nullable=False)
     elapsed_seconds: Column[float] = Column(Float, nullable=False)
     status = Column(
@@ -82,7 +82,7 @@ class CaptchaLog(Base):
         "NULL=not yet verified, True=accepted, False=rejected. "
         "Set via report_correct/report_incorrect after submission.",
     )
-    date_created = Column(DateTime, server_default=func.now(), nullable=False)
+    date_created = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         Index("ix_captcha_log_task_id", "task_id"),
@@ -111,10 +111,10 @@ class CaptchaLogError(Base):
         index=True,
     )
     error_code = Column(String(128), nullable=True, doc="Provider error code")
-    error_description = Column(Text, nullable=True, doc="Provider error message")
+    error_description = Column(UnicodeText, nullable=True, doc="Provider error message")
     error_category = Column(
         BigInteger,
         ForeignKey("c_captcha_error_category.id", ondelete="CASCADE"),
         nullable=True,
     )
-    date_created = Column(DateTime, server_default=func.now())
+    date_created = Column(DateTime(timezone=True), server_default=func.now())

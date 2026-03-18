@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from data_collector.utilities.request import ExceptionDescriptor
 
@@ -75,7 +75,7 @@ def test_get_errors_by_type_no_match() -> None:
 # ---------------------------------------------------------------------------
 
 def test_has_errors_after_true() -> None:
-    before = datetime.now() - timedelta(seconds=1)
+    before = datetime.now(UTC) - timedelta(seconds=1)
     ed = ExceptionDescriptor()
     ed.add_error("timeout", "test")
     assert ed.has_errors_after(before) is True
@@ -84,7 +84,7 @@ def test_has_errors_after_true() -> None:
 def test_has_errors_after_false() -> None:
     ed = ExceptionDescriptor()
     ed.add_error("timeout", "test")
-    after = datetime.now() + timedelta(seconds=1)
+    after = datetime.now(UTC) + timedelta(seconds=1)
     assert ed.has_errors_after(after) is False
 
 

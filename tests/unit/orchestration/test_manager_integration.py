@@ -77,23 +77,45 @@ class TestWatchServiceAutoDetect:
         mock_ws_instance.start.assert_called_once()
         assert manager._watch_service is mock_ws_instance
 
+    @patch(f"{_MODULE}.WatchService")
+    @patch(f"{_MODULE}.IngestEventHandler")
     @patch(f"{_MODULE}.load_roots_from_database")
-    def test_not_started_when_no_roots(self, mock_load_roots: MagicMock) -> None:
+    def test_starts_in_standby_when_no_roots(
+        self,
+        mock_load_roots: MagicMock,
+        mock_handler_class: MagicMock,
+        mock_ws_class: MagicMock,
+    ) -> None:
         mock_load_roots.return_value = []
+        mock_ws_instance = MagicMock()
+        mock_ws_class.return_value = mock_ws_instance
 
         manager = _make_manager()
         manager._start_watch_service()
 
-        assert manager._watch_service is None
+        mock_ws_class.assert_called_once()
+        mock_ws_instance.start.assert_called_once()
+        assert manager._watch_service is mock_ws_instance
 
+    @patch(f"{_MODULE}.WatchService")
+    @patch(f"{_MODULE}.IngestEventHandler")
     @patch(f"{_MODULE}.load_roots_from_database")
-    def test_handles_db_error_gracefully(self, mock_load_roots: MagicMock) -> None:
+    def test_starts_with_empty_roots_on_db_error(
+        self,
+        mock_load_roots: MagicMock,
+        mock_handler_class: MagicMock,
+        mock_ws_class: MagicMock,
+    ) -> None:
         mock_load_roots.side_effect = Exception("DB unreachable")
+        mock_ws_instance = MagicMock()
+        mock_ws_class.return_value = mock_ws_instance
 
         manager = _make_manager()
         manager._start_watch_service()
 
-        assert manager._watch_service is None
+        mock_ws_class.assert_called_once()
+        mock_ws_instance.start.assert_called_once()
+        assert manager._watch_service is mock_ws_instance
 
 
 # ---------------------------------------------------------------------------

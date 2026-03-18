@@ -119,12 +119,25 @@ class LogSettings(BaseSettings):
 
     @field_validator("log_error_file", mode="before")
     @classmethod
-    def _default_empty_log_error_file(cls, value: object) -> object:
-        """Use default fallback when env var is unset or empty."""
+    def _resolve_log_error_file(cls, value: object) -> object:
+        """Resolve the error log file path.
+
+        Accepts either a file path or a directory path.  When the value
+        points to an existing directory (or looks like a directory -- no
+        file extension), ``error.log`` is appended automatically.  This
+        allows ``DC_LOG_ERROR_FILE`` to be set to a directory like
+        ``D:\\DataCollectorStorage\\Logs`` and have the framework create
+        ``error.log`` inside it.
+        """
         if value is None:
             return "error.log"
         if isinstance(value, str) and not value.strip():
             return "error.log"
+        if isinstance(value, str):
+            from pathlib import Path
+            path = Path(value)
+            if path.is_dir() or (not path.suffix and not path.name.endswith(".log")):
+                return str(path / "error.log")
         return value
 
 

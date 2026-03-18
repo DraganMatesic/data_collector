@@ -14,7 +14,7 @@ import logging
 import random
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -59,7 +59,7 @@ class ExceptionDescriptor:
 
     def add_error(self, error_type: str, message: str, url: str | None = None) -> None:
         """Record an error with the current timestamp."""
-        self.errors[datetime.now()] = {
+        self.errors[datetime.now(UTC)] = {
             "type": error_type,
             "message": message,
             "url": url or "",
@@ -520,7 +520,7 @@ class Request:
 
     def _make_request(self, method: str, url: str, **kwargs: Any) -> httpx.Response | None:
         """Core sync request logic with retry and exponential backoff."""
-        self._last_request_time = datetime.now()
+        self._last_request_time = datetime.now(UTC)
         self.last_request_url = url
         self.response = None
         domain = self._extract_domain(url)
@@ -542,7 +542,7 @@ class Request:
 
                 # Success
                 if 200 <= status < 300:
-                    self._last_request_time = datetime.now()
+                    self._last_request_time = datetime.now(UTC)
                     if self._save_responses:
                         self._auto_save_response(url)
                     return self.response
@@ -576,7 +576,7 @@ class Request:
 
     async def _async_make_request(self, method: str, url: str, **kwargs: Any) -> httpx.Response | None:
         """Core async request logic with retry and exponential backoff."""
-        self._last_request_time = datetime.now()
+        self._last_request_time = datetime.now(UTC)
         self.last_request_url = url
         self.response = None
         domain = self._extract_domain(url)
@@ -597,7 +597,7 @@ class Request:
                 status = self.response.status_code
 
                 if 200 <= status < 300:
-                    self._last_request_time = datetime.now()
+                    self._last_request_time = datetime.now(UTC)
                     if self._save_responses:
                         self._auto_save_response(url)
                     return self.response
@@ -849,7 +849,7 @@ class Request:
         parsed = urlparse(url)
         domain = parsed.netloc.replace(":", "_")
         path_part = parsed.path.strip("/").replace("/", "_") or "index"
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H%M%S_%f")
         filename = f"{timestamp}_{domain}_{path_part}{ext}"
 
         save_dir = Path(self._save_dir)
@@ -899,7 +899,7 @@ class Request:
         Returns:
             Result from the SOAP call, or None on error.
         """
-        self._last_request_time = datetime.now()
+        self._last_request_time = datetime.now(UTC)
         try:
             start = time.monotonic()
             result = service_method(**params)

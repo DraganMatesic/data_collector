@@ -1,7 +1,7 @@
 """Logging ORM tables and related codebooks."""
 
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func, text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, UnicodeText, func, text
 
 from data_collector.tables.apps import AppFunctions, Apps
 from data_collector.tables.runtime import Runtime
@@ -17,8 +17,8 @@ class CodebookLogLevel(Base):
     id = Column(BigInteger, primary_key=True, comment="log level ID")
     description = Column(String(128), comment="Log level description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Logs(Base):
@@ -35,13 +35,13 @@ class Logs(Base):
     )
 
     module_name = Column(String(length=256), doc="Module name (.py) from where logging is coming")
-    module_path = Column(Text, doc="Module path from where logging is coming.")
+    module_path = Column(UnicodeText, doc="Module path from where logging is coming.")
     function_name = Column(String(length=256), doc="Function name from where logging is coming")
     function_id = Column(String(length=64), index=True,
                          doc="It is hashed value of app_id, module_name and function_name ")
 
 
-    call_chain = Column(Text, doc="Contains call chain from root caller to actual logging caller")
+    call_chain = Column(UnicodeText, doc="Contains call chain from root caller to actual logging caller")
     thread_id = Column(BigInteger, doc="OS thread ID from threading.get_ident(), auto-bound by @fun_watch")
     lineno = Column(Integer, doc="Indicates line number where logging function was called")
 
@@ -50,10 +50,10 @@ class Logs(Base):
                       index=True,
                       doc="Default numeric python logging levels")
 
-    msg = Column(Text, doc="Logging message that is emitted")
-    context_json = Column(Text, nullable=True, doc="Arbitrary structured context from structured logging")
+    msg = Column(UnicodeText, doc="Logging message that is emitted")
+    context_json = Column(UnicodeText, nullable=True, doc="Arbitrary structured context from structured logging")
     runtime = Column(String(length=64), ForeignKey(Runtime.runtime, ondelete="CASCADE"), index=True)
-    date_created = Column(DateTime, server_default=text("NOW()"))
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class FunctionLog(Base):
@@ -79,8 +79,8 @@ class FunctionLog(Base):
     failed = Column(Integer, server_default=text("0"))
     processed_count = Column(BigInteger, nullable=False, server_default=text("0"))
     is_success = Column(Boolean, nullable=False, server_default=text("true"))
-    start_time = Column(DateTime)
-    end_time = Column(DateTime)
+    start_time = Column(DateTime(timezone=True))
+    end_time = Column(DateTime(timezone=True))
     totals = Column(Integer)
     totalm = Column(Integer)
     totalh = Column(Integer)
@@ -89,7 +89,7 @@ class FunctionLog(Base):
         ForeignKey(Runtime.runtime, ondelete="CASCADE"),
         index=True,
     )
-    date_created = Column(DateTime, server_default=func.now())
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class FunctionLogError(Base):
@@ -106,11 +106,11 @@ class FunctionLogError(Base):
         index=True,
     )
     error_type = Column(String(256), doc="Exception class name")
-    error_message = Column(Text, doc="Exception message string")
+    error_message = Column(UnicodeText, doc="Exception message string")
     item_error_count = Column(
         Integer, nullable=False, server_default=text("0"),
         doc="Count of items with typed errors via mark_failed(error_type=...)",
     )
-    item_error_types_json = Column(Text, doc="JSON: error type -> count mapping")
-    item_error_samples_json = Column(Text, doc="JSON: error type -> sample messages (max 5 per type)")
-    date_created = Column(DateTime, server_default=func.now())
+    item_error_types_json = Column(UnicodeText, doc="JSON: error type -> count mapping")
+    item_error_samples_json = Column(UnicodeText, doc="JSON: error type -> sample messages (max 5 per type)")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())

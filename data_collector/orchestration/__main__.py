@@ -10,8 +10,14 @@ from __future__ import annotations
 import argparse
 import logging
 import signal
+import threading
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 
+import structlog
+import urllib3
 from sqlalchemy import select
 
 from data_collector.dramatiq.broker import DramatiqBroker
@@ -27,24 +33,77 @@ from data_collector.settings.notification import NotificationSettings
 from data_collector.settings.rabbitmq import RabbitMQSettings
 from data_collector.settings.watchservice import WatchServiceSettings
 from data_collector.tables.apps import Apps
+from data_collector.tables.runtime import Runtime
+from data_collector.utilities.app_registration import ensure_service_app
 from data_collector.utilities.app_status import update_app_status
 from data_collector.utilities.database.main import Database
+from data_collector.utilities.functions.math import get_totalh, get_totalm, get_totals
 from data_collector.utilities.log.main import LoggingService
 
 
-def _run_manager() -> None:
-    """Start the orchestration manager main loop."""
+class _ManagerContextFilter(logging.Filter):
+    """Inject app_id and runtime into every LogRecord.
+
+    Attached to the ``"data_collector"`` logger so that all log records
+    from any thread (including daemon threads for WatchService,
+    TaskDispatcher, and RabbitMQ consumer) carry the Manager's identity.
+    """
+
+    def __init__(self, app_id: str, runtime_id: str) -> None:
+        super().__init__()
+        self._app_id = app_id
+        self._runtime_id = runtime_id
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Add context fields to the record if not already present."""
+        if not getattr(record, "app_id", None):
+            record.app_id = self._app_id  # type: ignore[attr-defined]
+        if not getattr(record, "runtime", None):
+            record.runtime = self._runtime_id  # type: ignore[attr-defined]
+        if not getattr(record, "module_name", None):
+            record.module_name = Path(record.pathname).name  # type: ignore[attr-defined]
+        if not getattr(record, "module_path", None):
+            record.module_path = record.pathname  # type: ignore[attr-defined]
+        if not getattr(record, "function_name", None):
+            record.function_name = record.funcName  # type: ignore[attr-defined]
+        if not getattr(record, "thread_id", None):
+            record.thread_id = record.thread  # type: ignore[attr-defined]
+        return True
+
+
+def run_manager(external_stop_event: threading.Event | None = None) -> None:
+    """Start the orchestration manager main loop.
+
+    Args:
+        external_stop_event: Optional event set by an external caller (e.g. a
+            Windows service) to request graceful shutdown.  When provided, a
+            background thread monitors the event and calls ``manager.stop()``
+            when it fires.  When ``None``, shutdown is driven by SIGINT/SIGTERM.
+    """
     settings = ManagerSettings()
     database = Database(MainDatabaseSettings())
 
-    # Optional: notification dispatcher
+    # --- Phase 1: Establish identity BEFORE logging ---
+    # Logs table has FK constraints on app_id and runtime.  Both rows must
+    # exist before DatabaseHandler writes any records, otherwise FK violations
+    # silently drop all log entries.
+    manager_app_id = ensure_service_app(database, "manager")
+    manager_runtime_id = uuid.uuid4().hex
+    with database.create_session() as session:
+        session.merge(Runtime(
+            runtime=manager_runtime_id,
+            app_id=manager_app_id,
+            start_time=datetime.now(UTC),
+        ))
+        session.commit()
+
+    # --- Phase 2: Optional integrations (no logging yet) ---
     notification_dispatcher: NotificationDispatcher | None = None
     if settings.notifications_enabled:
         notification_settings = NotificationSettings()
         if notification_settings.notifications_enabled:
             notification_dispatcher = NotificationDispatcher.from_settings(notification_settings)
 
-    # Optional: RabbitMQ connection + Dramatiq broker
     rabbitmq_connection: RabbitMQConnection | None = None
     rabbitmq_settings: RabbitMQSettings | None = None
     dramatiq_broker: DramatiqBroker | None = None
@@ -55,8 +114,14 @@ def _run_manager() -> None:
         dramatiq_settings = DramatiqSettings()
         dramatiq_broker = DramatiqBroker(rabbitmq_settings, dramatiq_settings)
 
-    # Logging
+    # --- Phase 3: Logging (identity already exists) ---
     log_settings = LogSettings()
+    log_error_directory = Path(log_settings.log_error_file).parent
+    try:
+        log_error_directory.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise RuntimeError(f"Cannot create log directory: {log_error_directory}") from None
+
     service = LoggingService(
         "data_collector",
         settings=log_settings,
@@ -64,6 +129,14 @@ def _run_manager() -> None:
     )
     logger = service.configure_logger()
 
+    # Bind identity to structlog context and stdlib handler filter.
+    # Every log record from this point onward carries app_id + runtime.
+    structlog.contextvars.bind_contextvars(app_id=manager_app_id, runtime=manager_runtime_id)
+    context_filter = _ManagerContextFilter(manager_app_id, manager_runtime_id)
+    for handler in logging.getLogger("data_collector").handlers:
+        handler.addFilter(context_filter)
+
+    # --- Phase 4: Manager construction and run ---
     manager = Manager(
         database,
         settings,
@@ -74,20 +147,52 @@ def _run_manager() -> None:
         dramatiq_broker=dramatiq_broker,
         watch_service_settings=WatchServiceSettings(),
         task_dispatcher_settings=TaskDispatcherSettings(),
+        manager_app_id=manager_app_id,
     )
 
-    # Signal handlers for graceful shutdown
-    def handle_shutdown(signum: int, frame: object) -> None:
-        manager.stop()
+    # External stop event support (Windows service mode)
+    if external_stop_event is not None:
+        def _wait_for_external_stop() -> None:
+            external_stop_event.wait()
+            manager.stop()
 
-    signal.signal(signal.SIGTERM, handle_shutdown)
-    signal.signal(signal.SIGINT, handle_shutdown)
+        stop_watcher = threading.Thread(
+            target=_wait_for_external_stop,
+            daemon=True,
+            name="service-stop-watcher",
+        )
+        stop_watcher.start()
+    else:
+        # Signal handlers for graceful shutdown (CLI mode only).
+        # Cannot register signals from non-main threads (e.g. Windows service).
+        def handle_shutdown(signum: int, frame: object) -> None:
+            manager.stop()
+
+        signal.signal(signal.SIGTERM, handle_shutdown)
+        signal.signal(signal.SIGINT, handle_shutdown)
 
     try:
         manager.run()
     finally:
+        # Finalize Runtime record with end_time, duration, and exit code.
+        end_time = datetime.now(UTC)
+        with database.create_session() as session:
+            runtime_row = database.query(
+                select(Runtime).where(Runtime.runtime == manager_runtime_id), session,
+            ).scalar_one_or_none()
+            if runtime_row is not None:
+                runtime_row.end_time = end_time
+                start = runtime_row.start_time
+                if start is not None:
+                    runtime_row.totals = get_totals(start, end_time)
+                    runtime_row.totalm = get_totalm(start, end_time)
+                    runtime_row.totalh = get_totalh(start, end_time)
+                runtime_row.exit_code = 0
+                session.commit()
+
         if rabbitmq_connection is not None:
             rabbitmq_connection.close()
+        service.stop()
 
 
 def _stop_apps() -> None:
@@ -164,12 +269,20 @@ def main() -> None:
         action="store_true",
         help="Terminate all running app processes and exit",
     )
+    parser.add_argument(
+        "--suppress-tls-warnings",
+        action="store_true",
+        help="Suppress urllib3 InsecureRequestWarning (for self-signed certificates)",
+    )
     arguments = parser.parse_args()
+
+    if arguments.suppress_tls_warnings:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     if arguments.stop_apps:
         _stop_apps()
     else:
-        _run_manager()
+        run_manager()
 
 
 if __name__ == "__main__":

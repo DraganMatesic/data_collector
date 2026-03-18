@@ -11,7 +11,7 @@ from sqlalchemy import (
     Integer,
     PrimaryKeyConstraint,
     String,
-    Text,
+    UnicodeText,
     func,
     text,
 )
@@ -29,8 +29,8 @@ class CodebookCommandFlags(Base):
     id = Column(BigInteger, primary_key=True, comment="Command flag ID")
     description = Column(String(128), comment="Command flag description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CodebookCommandList(Base):
@@ -42,8 +42,8 @@ class CodebookCommandList(Base):
     name = Column(String(10), unique=True, comment="Name of command")
     description = Column(String(128), comment="Command description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CodebookFatalFlags(Base):
@@ -54,8 +54,8 @@ class CodebookFatalFlags(Base):
     id = Column(BigInteger, primary_key=True, comment="Fatal flag ID")
     description = Column(String(128), comment="Fatal flag description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CodebookRunStatus(Base):
@@ -66,8 +66,8 @@ class CodebookRunStatus(Base):
     id = Column(BigInteger, primary_key=True, comment="Run status ID")
     description = Column(String(128), comment="Run status description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CodebookAppType(Base):
@@ -77,8 +77,8 @@ class CodebookAppType(Base):
     id = Column(BigInteger, primary_key=True, comment="App type ID")
     description = Column(String(128), comment="App type description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class AppGroups(Base):
@@ -135,15 +135,15 @@ class Apps(Base):
     parent_id = Column(String, ForeignKey(AppParents.parent, ondelete="CASCADE"), index=True)
 
     # Scheduling fields
-    last_run = Column(DateTime, comment="Timestamp of last app run")
-    next_run = Column(DateTime, comment="Timestamp of next app run")
+    last_run = Column(DateTime(timezone=True), comment="Timestamp of last app run")
+    next_run = Column(DateTime(timezone=True), comment="Timestamp of next app run")
     interval = Column(Integer, comment="Run interval in minutes. NULL = cron-based or manual-only")
     cron_expression = Column(
         String(128), comment="Cron expression for scheduling. NULL = interval-based or manual-only",
     )
 
     # Runtime data
-    app_pids = Column(Text, comment="List of process IDs connected to app")
+    app_pids = Column(UnicodeText, comment="List of process IDs connected to app")
     run_status = Column(
         Integer,
         ForeignKey(CodebookRunStatus.id, ondelete="RESTRICT"),
@@ -154,7 +154,7 @@ class Apps(Base):
     task_size = Column(Integer, comment="Total items to process in current loop")
     solved = Column(Integer, server_default=text("0"), comment="Successfully processed items")
     failed = Column(Integer, server_default=text("0"), comment="Items that ended with error")
-    eta = Column(DateTime, comment="Estimated time of completion")
+    eta = Column(DateTime(timezone=True), comment="Estimated time of completion")
 
     # Fatal error tracking
     fatal_flag = Column(
@@ -163,8 +163,8 @@ class Apps(Base):
         server_default=text("0"),
         comment="Fatal error flag. FK to c_fatal_flags"
     )
-    fatal_msg = Column(Text, comment="Reason why app is set to fatal status")
-    fatal_time = Column(DateTime, comment="Time of last fatal flag")
+    fatal_msg = Column(UnicodeText, comment="Reason why app is set to fatal status")
+    fatal_time = Column(DateTime(timezone=True), comment="Time of last fatal flag")
 
     # Optional runtime ID linkage
     runtime_id = Column(String(64), comment="ID linking to runtime metadata")
@@ -182,14 +182,14 @@ class Apps(Base):
         lazy="joined",
         uselist=False
     )
-    cmd_time = Column(DateTime, comment="When command was issued")
+    cmd_time = Column(DateTime(timezone=True), comment="When command was issued")
     cmd_flag = Column(
         Integer,
         ForeignKey(CodebookCommandFlags.id, ondelete="RESTRICT"),
         server_default=text("0"),
         comment="Command status flag. FK to c_cmd_flags"
     )
-    cmd_exec = Column(DateTime, comment="When command was executed")
+    cmd_exec = Column(DateTime(timezone=True), comment="When command was executed")
 
     # Disable flag (default: true = disabled)
     disable = Column(Boolean, server_default=text("true"), comment="disable flag for app (default: true = disabled)")
@@ -201,7 +201,9 @@ class Apps(Base):
     )
 
     # Scheduled removal
-    removal_date = Column(DateTime, comment="Scheduled removal date. Retention cleaner deletes app after this date")
+    removal_date = Column(
+        DateTime(timezone=True), comment="Scheduled removal date. Retention cleaner deletes app after this date",
+    )
 
     # Composite foreign key ensures group/parent match in AppParents
     # Composite primary key ensures group/parent/app are unique
@@ -235,11 +237,11 @@ class AppDbObjects(Base):
     database_schema = Column(String(50))
     object_name = Column(String(75))
     object_type = Column(String(20))
-    last_use_date = Column(DateTime, comment="when the last time DDL action was done")
+    last_use_date = Column(DateTime(timezone=True), comment="when the last time DDL action was done")
     sha = Column(String(64), nullable=False, index=True)
 
-    archive = Column(DateTime, comment="data and time this database object was removed from usage")
-    date_created = Column(DateTime, server_default=func.now())  # DateCreated
+    archive = Column(DateTime(timezone=True), comment="data and time this database object was removed from usage")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())  # DateCreated
 
 
 class AppFunctions(Base):
@@ -256,9 +258,9 @@ class AppFunctions(Base):
         ForeignKey(Apps.app, ondelete="CASCADE"),
         index=True,
     )
-    first_seen = Column(DateTime)
-    last_seen = Column(DateTime)
+    first_seen = Column(DateTime(timezone=True))
+    last_seen = Column(DateTime(timezone=True))
     sha = Column(String(64), index=True)
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
-    date_modified = Column(DateTime)
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
+    date_modified = Column(DateTime(timezone=True))
