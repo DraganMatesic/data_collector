@@ -239,9 +239,10 @@ def _bootstrap_logging(database: Database, runtime_id: str) -> None:
     """
     log_settings = LogSettings()
 
+    # Workers use a separate log file to avoid colliding with the Manager's error.log.
+    # The validator already resolved directory -> error.log, so replace the filename.
     error_file_path = Path(log_settings.log_error_file)
-    if error_file_path.is_dir():
-        log_settings.log_error_file = str(error_file_path / "pipeline_error.log")
+    log_settings.log_error_file = str(error_file_path.parent / "pipeline_error.log")
 
     service = LoggingService(
         "data_collector",

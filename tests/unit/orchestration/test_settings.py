@@ -17,7 +17,7 @@ class TestManagerSettings:
         assert settings.process_check_interval == 30
         assert settings.startup_grace_period == 10
         assert settings.max_start_failures == 3
-        assert settings.rabbitmq_enabled is False
+        assert settings.rabbitmq_enabled is True
         assert settings.notifications_enabled is False
         assert settings.shutdown_timeout == 30
         assert settings.retention_enabled is True

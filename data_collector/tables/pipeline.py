@@ -20,7 +20,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
-    Text,
+    UnicodeText,
     UniqueConstraint,
     text,
 )
@@ -39,8 +39,8 @@ class CodebookPipelineStatus(Base):
     id = Column(BigInteger, primary_key=True, comment="Pipeline status ID")
     description = Column(String(128), comment="Status description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CodebookPipelineStage(Base):
@@ -50,8 +50,8 @@ class CodebookPipelineStage(Base):
     id = Column(BigInteger, primary_key=True, comment="Pipeline stage ID")
     description = Column(String(128), comment="Stage description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Events(Base):
@@ -70,9 +70,9 @@ class Events(Base):
         nullable=False,
         comment="Python module path for dynamic import of TopicExchangeQueue definition",
     )
-    file_path = Column(Text, nullable=True, comment="Source document or file path")
+    file_path = Column(UnicodeText, nullable=True, comment="Source document or file path")
     document_type = Column(String(128), nullable=True, index=True, comment="Document type identifier")
-    metadata_json = Column(Text, nullable=True, comment="Arbitrary JSON payload for the event")
+    metadata_json = Column(UnicodeText, nullable=True, comment="Arbitrary JSON payload for the event")
     event_type = Column(Integer, nullable=False, index=True, comment="EventType enum value (1=CREATED, 2=MODIFIED)")
     path_hash = Column(String(64), nullable=False, index=True, comment="SHA hash of normalized file path")
     country = Column(String(8), nullable=False, index=True, comment="Country code for pipeline routing")
@@ -81,14 +81,14 @@ class Events(Base):
     stable = Column(
         Boolean, nullable=True, server_default=sa_true(), comment="False while streaming, True when stable",
     )
-    stabilized_date = Column(DateTime, nullable=True, comment="When file became stable")
+    stabilized_date = Column(DateTime(timezone=True), nullable=True, comment="When file became stable")
     corrupted = Column(
         Boolean, nullable=True, server_default=sa_false(), comment="True if worker detected file corruption",
     )
-    destination_path = Column(Text, nullable=True, comment="Permanent storage path after worker moves file")
+    destination_path = Column(UnicodeText, nullable=True, comment="Permanent storage path after worker moves file")
     app_id = Column(String(64), index=True, nullable=True, comment="Producer application identifier")
-    archive = Column(DateTime, nullable=True, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), nullable=True, comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class WatchRoots(Base):
@@ -108,13 +108,15 @@ class WatchRoots(Base):
     country = Column(String(8), nullable=False, index=True, comment="Country code for pipeline routing")
     watch_group = Column(String(128), nullable=False, index=True, comment="Logical watch group (e.g. ocr, ingest)")
     worker_path = Column(String(512), nullable=False, comment="Python module path for Dramatiq actor import")
-    extensions = Column(Text, nullable=True, comment="JSON array of allowed extensions (e.g. [\".pdf\", \".zip\"])")
+    extensions = Column(
+        UnicodeText, nullable=True, comment="JSON array of allowed extensions (e.g. [\".pdf\", \".zip\"])",
+    )
     recursive = Column(Boolean, nullable=False, server_default=sa_true(), comment="Whether to watch subdirectories")
     active = Column(
         Boolean, nullable=False, server_default=sa_true(), comment="Whether this root is currently monitored",
     )
-    archive = Column(DateTime, nullable=True, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), nullable=True, comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class EventProcessingStatus(Base):
@@ -137,8 +139,10 @@ class EventProcessingStatus(Base):
         comment="Reference to the source event",
     )
     actor_name = Column(String(128), nullable=False, comment="Dramatiq actor that received this event")
-    dispatched_date = Column(DateTime, nullable=False, comment="When the message was published to RabbitMQ")
-    date_created = Column(DateTime, server_default=func.now())
+    dispatched_date = Column(
+        DateTime(timezone=True), nullable=False, comment="When the message was published to RabbitMQ",
+    )
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint("event_id", "actor_name", name="uq_event_processing_status_event_id_actor_name"),
@@ -159,7 +163,7 @@ class PipelineTask(Base):
     id = auto_increment_column()
     task_id = Column(String(64), unique=True, nullable=False, index=True, comment="Unique task hash identifier")
     document_type = Column(String(128), nullable=True, index=True, comment="Document type being processed")
-    source_path = Column(Text, nullable=True, comment="Source file or document path")
+    source_path = Column(UnicodeText, nullable=True, comment="Source file or document path")
     current_stage = Column(
         Integer,
         ForeignKey("c_pipeline_stage.id", ondelete="SET NULL"),
@@ -173,17 +177,17 @@ class PipelineTask(Base):
         server_default=text("0"),
         comment="Current task status (PipelineStatus enum)",
     )
-    stage_history = Column(Text, nullable=True, comment="JSON array of completed stage transitions")
-    error_message = Column(Text, nullable=True, comment="Last error message if status is FAILED")
+    stage_history = Column(UnicodeText, nullable=True, comment="JSON array of completed stage transitions")
+    error_message = Column(UnicodeText, nullable=True, comment="Last error message if status is FAILED")
     error_stage = Column(String(64), nullable=True, comment="Stage where the error occurred")
     retry_count = Column(Integer, server_default=text("0"), nullable=False, comment="Number of retry attempts")
     worker_id = Column(String(128), nullable=True, comment="Dramatiq worker/actor identifier")
     app_id = Column(String(64), nullable=True, index=True, comment="Application that owns this task")
     runtime = Column(String(64), nullable=True, index=True, comment="Runtime identifier for the processing run")
-    start_time = Column(DateTime, nullable=True, comment="When processing began")
-    end_time = Column(DateTime, nullable=True, comment="When processing finished")
-    archive = Column(DateTime, nullable=True, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    start_time = Column(DateTime(timezone=True), nullable=True, comment="When processing began")
+    end_time = Column(DateTime(timezone=True), nullable=True, comment="When processing finished")
+    archive = Column(DateTime(timezone=True), nullable=True, comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         Index("ix_pipeline_task_status", "status"),
@@ -203,13 +207,13 @@ class DeadLetter(Base):
     id = auto_increment_column()
     queue_name = Column(String(256), nullable=True, comment="Original RabbitMQ queue name")
     actor_name = Column(String(128), nullable=True, comment="Dramatiq actor that failed")
-    message_args = Column(Text, nullable=True, comment="JSON-serialized positional arguments")
-    message_kwargs = Column(Text, nullable=True, comment="JSON-serialized keyword arguments")
+    message_args = Column(UnicodeText, nullable=True, comment="JSON-serialized positional arguments")
+    message_kwargs = Column(UnicodeText, nullable=True, comment="JSON-serialized keyword arguments")
     error_type = Column(String(256), nullable=True, comment="Exception class name")
-    error_message = Column(Text, nullable=True, comment="Exception message")
-    traceback = Column(Text, nullable=True, comment="Full traceback string")
+    error_message = Column(UnicodeText, nullable=True, comment="Exception message")
+    traceback = Column(UnicodeText, nullable=True, comment="Full traceback string")
     original_message_id = Column(String(128), nullable=True, comment="Dramatiq message ID")
-    date_created = Column(DateTime, server_default=func.now())
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         Index("ix_dead_letter_actor_name", "actor_name"),
@@ -230,4 +234,4 @@ class RateLimiterState(Base):
 
     key = Column(String(256), primary_key=True, comment="Rate limiter key")
     value = Column(Integer, nullable=False, server_default=text("0"), comment="Current counter value")
-    expiration_date = Column(DateTime, nullable=True, comment="Key expiration timestamp (UTC)")
+    expiration_date = Column(DateTime(timezone=True), nullable=True, comment="Key expiration timestamp (UTC)")

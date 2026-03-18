@@ -14,5 +14,5 @@ class CodebookAlertSeverity(Base):
     id = Column(BigInteger, primary_key=True, comment="Alert severity ID")
     description = Column(String(128), comment="Alert severity description")
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())

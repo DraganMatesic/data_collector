@@ -51,7 +51,7 @@ class ManagerSettings(BaseSettings):
     max_start_failures: int = 3
 
     # -- Optional integrations --
-    rabbitmq_enabled: bool = False
+    rabbitmq_enabled: bool = True
     notifications_enabled: bool = False
 
     # -- Shutdown --

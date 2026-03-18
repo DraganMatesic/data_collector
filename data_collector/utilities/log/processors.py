@@ -80,6 +80,19 @@ def extract_caller_info() -> Processor:
     """
 
     def processor(_logger: Any, _method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+        # For stdlib LogRecords routed through ProcessorFormatter, extract
+        # caller info from the record itself rather than walking the stack.
+        # The stack walk fails for foreign records because all intermediate
+        # frames belong to stdlib logging (filtered by _is_internal_frame).
+        record: logging.LogRecord | None = event_dict.get("_record")
+        if record is not None and record.pathname:
+            event_dict.setdefault("module_name", Path(record.pathname).name)
+            event_dict.setdefault("module_path", record.pathname)
+            event_dict.setdefault("function_name", record.funcName)
+            event_dict.setdefault("lineno", record.lineno)
+            event_dict.setdefault("thread_id", threading.get_ident())
+            return event_dict
+
         frame = inspect.currentframe()
         if frame is None:
             return event_dict

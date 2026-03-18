@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -271,6 +272,9 @@ class ProcessTracker:
                 self._clear_orphan_state(app_id)
                 continue
 
+            if pid == os.getpid():
+                continue  # Skip our own process (Manager re-registered itself)
+
             if self.is_pid_alive(pid):
                 self._logger.warning(
                     "Orphan process PID %d found for %s/%s/%s, terminating",
@@ -361,10 +365,15 @@ class ProcessTracker:
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
             process_query_limited_information = 0x1000
             handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
-            if handle:
+            if not handle:
+                return False
+            try:
+                still_active = 259
+                exit_code = ctypes.c_ulong()
+                kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                return exit_code.value == still_active
+            finally:
                 kernel32.CloseHandle(handle)
-                return True
-            return False
 
         # Unix: send signal 0 to check existence
         try:
@@ -378,7 +387,12 @@ class ProcessTracker:
 
     @staticmethod
     def kill_pid(pid: int, *, timeout: int = 10) -> None:
-        """Terminate an orphan process by PID (not tracked by this Manager)."""
+        """Terminate an orphan process by PID (not tracked by this Manager).
+
+        On Windows, uses ``TerminateProcess`` which is uncatchable.
+        On Linux, sends SIGTERM first and escalates to SIGKILL if the
+        process does not exit within ``timeout`` seconds.
+        """
         if sys.platform == "win32":
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
             process_terminate = 0x0001
@@ -386,6 +400,19 @@ class ProcessTracker:
             if handle:
                 kernel32.TerminateProcess(handle, 1)
                 kernel32.CloseHandle(handle)
+            # Wait for process to exit after TerminateProcess
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if not ProcessTracker.is_pid_alive(pid):
+                    return
+                time.sleep(0.5)
         else:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if not ProcessTracker.is_pid_alive(pid):
+                    return
+                time.sleep(0.5)
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)

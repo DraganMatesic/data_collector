@@ -33,10 +33,10 @@ from data_collector.settings.dramatiq import TaskDispatcherSettings
 from data_collector.settings.manager import ManagerSettings
 from data_collector.settings.rabbitmq import RabbitMQSettings
 from data_collector.settings.watchservice import WatchServiceSettings
-from data_collector.tables.apps import AppGroups, AppParents, Apps
+from data_collector.tables.apps import Apps
+from data_collector.utilities.app_registration import ensure_service_app
 from data_collector.utilities.app_status import update_app_status
 from data_collector.utilities.database.main import Database
-from data_collector.utilities.functions.runtime import get_app_id
 
 
 class Manager:
@@ -71,6 +71,7 @@ class Manager:
         dramatiq_broker: DramatiqBroker | None = None,
         watch_service_settings: WatchServiceSettings | None = None,
         task_dispatcher_settings: TaskDispatcherSettings | None = None,
+        manager_app_id: str | None = None,
     ) -> None:
         self._database = database
         self._settings = settings
@@ -104,6 +105,12 @@ class Manager:
         # In-memory failure tracking per app (reset on Manager restart)
         self._failure_counts: dict[str, int] = {}
 
+        # Pre-computed Manager app_id (set by caller before logging starts)
+        self._manager_app_id = manager_app_id
+
+        # Exception counter for Runtime.except_cnt
+        self._exception_count: int = 0
+
         # Timing trackers for periodic operations
         self._last_command_poll: float = 0.0
         self._last_process_check: float = 0.0
@@ -126,18 +133,26 @@ class Manager:
         self._start_task_dispatcher()
 
         self._logger.info(
-            "Manager running (poll=%ds, cmd_poll=%ds, process_check=%ds)",
-            self._settings.polling_interval,
-            self._settings.command_poll_interval,
-            self._settings.process_check_interval,
+            f"Manager running (poll={self._settings.polling_interval}s, "
+            f"cmd_poll={self._settings.command_poll_interval}s, "
+            f"process_check={self._settings.process_check_interval}s)",
         )
 
         try:
             while not self._stop_event.is_set():
-                self._tick()
+                try:
+                    self._tick()
+                except Exception:
+                    self._exception_count += 1
+                    self._logger.exception("Manager tick failed (except_cnt=%d)", self._exception_count)
                 self._stop_event.wait(timeout=self._settings.polling_interval)
         finally:
             self._shutdown()
+
+    @property
+    def exception_count(self) -> int:
+        """Number of exceptions caught during the main loop."""
+        return self._exception_count
 
     def stop(self) -> None:
         """Signal the main loop to stop."""
@@ -412,8 +427,7 @@ class Manager:
     def _register_service_app(self, service_name: str) -> str:
         """Register a framework service as an app in the Apps hierarchy.
 
-        Uses the convention ``group="data_collector"``, ``parent=service_name``,
-        ``name=service_name`` for internal services.
+        Delegates to the shared ``ensure_service_app`` utility.
 
         Args:
             service_name: Service identifier (e.g., "watchservice", "task_dispatcher").
@@ -421,45 +435,20 @@ class Manager:
         Returns:
             The computed app_id (64-char SHA-256 hex).
         """
-        group = "data_collector"
-        app_id = get_app_id(group, service_name, service_name)
-
-        with self._database.create_session() as session:
-            existing_group = self._database.query(
-                select(AppGroups).where(AppGroups.name == group), session,
-            ).scalar_one_or_none()
-            if existing_group is None:
-                self._database.add(AppGroups(name=group), session)
-                session.flush()
-
-            existing_parent = self._database.query(
-                select(AppParents).where(AppParents.name == service_name, AppParents.group_name == group), session,
-            ).scalar_one_or_none()
-            if existing_parent is None:
-                self._database.add(AppParents(name=service_name, group_name=group), session)
-                session.flush()
-
-            session.merge(Apps(
-                app=app_id,
-                group_name=group,
-                parent_name=service_name,
-                app_name=service_name,
-            ))
-            session.commit()
-
-        return app_id
+        return ensure_service_app(self._database, service_name)
 
     def _start_watch_service(self) -> None:
-        """Start WatchService if active WatchRoots exist in the database."""
+        """Start WatchService regardless of current root count.
+
+        If no active roots exist, the service starts in standby and
+        polls for newly registered roots every ``reconcile_interval``
+        seconds via hot-reload.
+        """
         try:
             roots = load_roots_from_database(self._database)
         except Exception:
             self._logger.exception("Failed to load watch roots from database")
-            return
-
-        if not roots:
-            self._logger.debug("No active watch roots found, WatchService not started")
-            return
+            roots = []
 
         watch_service_app_id = self._register_service_app("watchservice")
         event_handler = IngestEventHandler(self._database, app_id=watch_service_app_id)
@@ -470,7 +459,10 @@ class Manager:
             database=self._database,
         )
         self._watch_service.start()
-        self._logger.info("WatchService started with %d root(s)", len(roots))
+        if roots:
+            self._logger.info("WatchService started with %d root(s)", len(roots))
+        else:
+            self._logger.info("WatchService started, waiting for roots to be registered")
 
     def _start_task_dispatcher(self) -> None:
         """Start TaskDispatcher if a DramatiqBroker is available."""

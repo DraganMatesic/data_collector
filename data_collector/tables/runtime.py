@@ -15,8 +15,8 @@ class CodebookRuntimeCodes(Base):
     id = Column(BigInteger, primary_key=True)
     description = Column(String(128))
     sha = Column(String(64), comment="Hash for merge-based seeding")
-    archive = Column(DateTime, comment="Soft delete timestamp")
-    date_created = Column(DateTime, server_default=func.now())
+    archive = Column(DateTime(timezone=True), comment="Soft delete timestamp")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # Summary of single runtime cycle
@@ -44,14 +44,14 @@ class Runtime(Base):
     runtime = Column(String(length=64), unique=True, index=True)
     app_id = Column(String(length=64), index=True)
     task_size = Column(BigInteger)
-    start_time = Column(DateTime)
-    end_time = Column(DateTime)
+    start_time = Column(DateTime(timezone=True))
+    end_time = Column(DateTime(timezone=True))
     totals = Column(Integer)
     totalm = Column(Integer)
     totalh = Column(Integer)
     except_cnt = Column(Integer, server_default=text("0"))
     exit_code = Column(Integer, server_default=text("0"))
-    date_created = Column(DateTime, server_default=func.now())
+    date_created = Column(DateTime(timezone=True), server_default=func.now())
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Runtime):

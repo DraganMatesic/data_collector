@@ -21,5 +21,5 @@ class ExampleTable(Base):
     surname = Column(String(25))
     birth_date = Column(Date)
     sha = Column(String(64))
-    archive = Column(DateTime, comment="data and time this database object was removed from usage")
-    date_created = Column(DateTime, server_default=func.now())  # DateCreated
+    archive = Column(DateTime(timezone=True), comment="data and time this database object was removed from usage")
+    date_created = Column(DateTime(timezone=True), server_default=func.now())  # DateCreated
