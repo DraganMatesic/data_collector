@@ -108,6 +108,9 @@ class Manager:
         # Pre-computed Manager app_id (set by caller before logging starts)
         self._manager_app_id = manager_app_id
 
+        # Exception counter for Runtime.except_cnt
+        self._exception_count: int = 0
+
         # Timing trackers for periodic operations
         self._last_command_poll: float = 0.0
         self._last_process_check: float = 0.0
@@ -137,10 +140,19 @@ class Manager:
 
         try:
             while not self._stop_event.is_set():
-                self._tick()
+                try:
+                    self._tick()
+                except Exception:
+                    self._exception_count += 1
+                    self._logger.exception("Manager tick failed (except_cnt=%d)", self._exception_count)
                 self._stop_event.wait(timeout=self._settings.polling_interval)
         finally:
             self._shutdown()
+
+    @property
+    def exception_count(self) -> int:
+        """Number of exceptions caught during the main loop."""
+        return self._exception_count
 
     def stop(self) -> None:
         """Signal the main loop to stop."""

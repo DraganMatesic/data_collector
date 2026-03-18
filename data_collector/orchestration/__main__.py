@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from data_collector.dramatiq.broker import DramatiqBroker
 from data_collector.enums import RunStatus
+from data_collector.enums.runtime import RuntimeExitCode
 from data_collector.messaging.connection import RabbitMQConnection
 from data_collector.notifications.dispatcher import NotificationDispatcher
 from data_collector.orchestration.manager import Manager
@@ -171,8 +172,12 @@ def run_manager(external_stop_event: threading.Event | None = None) -> None:
         signal.signal(signal.SIGTERM, handle_shutdown)
         signal.signal(signal.SIGINT, handle_shutdown)
 
+    exit_code = RuntimeExitCode.FINISHED
     try:
         manager.run()
+    except Exception:
+        exit_code = RuntimeExitCode.MANAGER_EXIT
+        cast(logging.Logger, logger).exception("Manager crashed")
     finally:
         # Finalize Runtime record with end_time, duration, and exit code.
         end_time = datetime.now(UTC)
@@ -187,7 +192,8 @@ def run_manager(external_stop_event: threading.Event | None = None) -> None:
                     runtime_row.totals = get_totals(start, end_time)
                     runtime_row.totalm = get_totalm(start, end_time)
                     runtime_row.totalh = get_totalh(start, end_time)
-                runtime_row.exit_code = 0
+                runtime_row.except_cnt = manager.exception_count
+                runtime_row.exit_code = exit_code
                 session.commit()
 
         if rabbitmq_connection is not None:
