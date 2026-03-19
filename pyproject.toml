@@ -31,7 +31,8 @@ dev = [
     "mypy>=1.10.0",
     "pytest-asyncio>=0.24.0",
     "respx>=0.22.0",
-    "zeep>=4.2.0"
+    "zeep>=4.2.0",
+    "lxml-stubs>=0.5.1"
 ]
 
 [tool.setuptools.dynamic]
