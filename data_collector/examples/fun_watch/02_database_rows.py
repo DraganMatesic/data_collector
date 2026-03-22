@@ -33,9 +33,9 @@ from typing import Any
 
 from sqlalchemy import select
 
-from data_collector.settings.main import LogSettings, MainDatabaseSettings
+from data_collector.settings.main import LogSettings
 from data_collector.tables.apps import AppFunctions, AppGroups, AppParents, Apps
-from data_collector.tables.deploy import Deploy
+from data_collector.tables.deploy import ExampleDeploy
 from data_collector.tables.log import FunctionLog, Logs
 from data_collector.tables.runtime import Runtime
 from data_collector.utilities.database.main import Database
@@ -167,11 +167,12 @@ def main() -> None:
     runtime_child = uuid.uuid4().hex
     app_ids = [app_id_main, app_id_child]
 
-    deploy = Deploy()
+    deploy = ExampleDeploy()
     deploy.create_tables()
     deploy.populate_tables()
+    FunWatchRegistry.instance().set_system_db(deploy.database)
 
-    db = Database(MainDatabaseSettings())
+    db = deploy.database
     _seed_parent_rows(db, app_info, [
         (app_id_main, app_info["app_name"], runtime_main),
         (app_id_child, app_info["app_name"] + "_child", runtime_child),

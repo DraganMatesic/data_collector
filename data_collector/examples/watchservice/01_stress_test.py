@@ -34,7 +34,7 @@ from data_collector.messaging.watchservice import IngestEventHandler, Root, Watc
 from data_collector.settings.main import LogSettings
 from data_collector.settings.watchservice import WatchServiceSettings
 from data_collector.tables.apps import AppGroups, AppParents, Apps
-from data_collector.tables.deploy import Deploy
+from data_collector.tables.deploy import ExampleDeploy
 from data_collector.tables.pipeline import Events, WatchRoots
 from data_collector.tables.runtime import Runtime
 from data_collector.utilities.database.main import Database
@@ -279,7 +279,7 @@ def main() -> None:
 
     # ---- Step 1: Deploy tables ----
     print("[1/6] Deploying tables (recreate) ...")
-    deploy = Deploy()
+    deploy = ExampleDeploy()
     deploy.recreate_tables()
     deploy.populate_tables()
     database = deploy.database

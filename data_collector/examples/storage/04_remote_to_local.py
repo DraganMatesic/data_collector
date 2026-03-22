@@ -35,12 +35,11 @@ from pathlib import Path
 from sqlalchemy import select
 
 from data_collector.enums.storage import FileRetention
-from data_collector.settings.main import MainDatabaseSettings
 from data_collector.settings.storage import StorageSettings
 from data_collector.storage.backend import FilesystemBackend
 from data_collector.storage.manager import StorageManager
 from data_collector.tables.apps import AppGroups, AppParents, Apps
-from data_collector.tables.deploy import Deploy
+from data_collector.tables.deploy import ExampleDeploy
 from data_collector.tables.runtime import Runtime
 from data_collector.tables.storage import StorageBackend
 from data_collector.utilities.database.main import Database
@@ -119,11 +118,11 @@ def main() -> None:
     assert isinstance(app_info, dict)
     runtime_id = uuid.uuid4().hex
 
-    deploy = Deploy()
+    deploy = ExampleDeploy()
     deploy.create_tables()
     deploy.populate_tables()
 
-    database = Database(MainDatabaseSettings())
+    database = deploy.database
     _seed_parent_rows(database, app_info, runtime_id)
 
     settings = StorageSettings()

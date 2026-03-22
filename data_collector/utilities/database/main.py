@@ -243,7 +243,13 @@ def database_classes(db_type: DatabaseType) -> type[BaseDBConnector]:
 
 
 class Database:
-    def __init__(self, settings: DatabaseSettings, app_id: str | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        settings: DatabaseSettings,
+        app_id: str | None = None,
+        schema_translate_map: dict[str | None, str | None] | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a database interface with SQLAlchemy engine and optional object mapping.
 
         Args:
@@ -251,6 +257,10 @@ class Database:
             app_id: Hashed application identifier for dependency tracking. Required when
                 settings.map_objects is True. Used to register database object dependencies
                 (tables, views, routines) in AppDbObjects for analytics and orchestration.
+            schema_translate_map: Optional schema name translation map applied to the engine.
+                Redirects SQL schema references at the connection level without modifying ORM
+                model definitions. Example: ``{None: "dc_example"}`` routes all tables with no
+                explicit schema from the default schema (public/dbo) into ``dc_example``.
             **kwargs: Additional keyword arguments passed to SQLAlchemy's create_engine().
         """
         self.settings = settings
@@ -258,7 +268,10 @@ class Database:
         self.app_id: str | None = app_id
         self.logger: logging.Logger = logging.getLogger(__name__)
         self._system_db: Database | None = None
+        self._schema_translate_map = schema_translate_map
         self.engine: Engine = self.engine_construct(**kwargs)
+        if schema_translate_map is not None:
+            self.engine = self.engine.execution_options(schema_translate_map=schema_translate_map)
 
     def engine_construct(self, **kwargs: Any) -> Engine:
         """Construct and return a SQLAlchemy Engine.
@@ -631,7 +644,7 @@ class Database:
     def _get_system_db(self) -> "Database":
         """Returns a cached Database instance connected to the main system database."""
         if self._system_db is None:
-            self._system_db = Database(MainDatabaseSettings())
+            self._system_db = Database(MainDatabaseSettings(), schema_translate_map=self._schema_translate_map)
         return self._system_db
 
     def _track_models_from_objects(self, objects: list[Any] | tuple[Any, ...]) -> set[type[Any]]:
