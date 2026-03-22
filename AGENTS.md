@@ -36,6 +36,27 @@ python data_collector/utilities/validate_docs.py    # Doc validator (if docs cha
 
 All new code must pass all four gates. Do not skip any.
 
+## Code Review Protocol (mandatory before PR)
+
+After quality gates pass, perform an adversarial review before declaring code ready:
+
+1. **Trace every public method end-to-end.** Follow the call chain from entry point to database/filesystem. Check what filters, constraints, and error handling exist at each layer. Do not review methods in isolation.
+
+2. **Ask "how does this break?" for every code path.** Test mentally with:
+   - Concurrent callers (race conditions, duplicate inserts, unique constraint violations)
+   - Repeated execution (idempotency -- run the same operation twice, verify no side effects)
+   - Cross-component interaction (two apps sharing a backend, two managers on the same DB)
+   - Missing/deleted data (file already gone, row already deleted, backend unreachable)
+   - Partial failure (DB commit succeeds but file write fails, or vice versa)
+
+3. **Verify every database query has correct filters.** If a method belongs to a specific app, the query must filter by `app_id`. If it belongs to a specific backend, filter by `location`. No cross-scope data leaks.
+
+4. **Never classify a known issue as "acceptable for now."** Enterprise code has no deferred fixes. If you find a race condition, missing constraint, or data integrity gap -- fix it before PR. If it cannot be fixed in this scope, document it as a known limitation in the PR description.
+
+5. **Check return values after error recovery.** After catching an exception and recovering (rollback, retry, skip), verify the returned value is still valid. A rolled-back insert means the returned path/object may reference non-existent state.
+
+6. **Run examples end-to-end twice.** First run creates state, second run tests idempotency. Both must succeed with identical final state.
+
 ## Housekeeping
 
 - Check for pip install artifacts in the project root (files like `=6.0.0`, `=2.1.3` created by malformed `pip install` commands). Delete any such files before committing.
