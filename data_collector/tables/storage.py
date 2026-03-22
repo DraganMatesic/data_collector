@@ -99,6 +99,11 @@ class StoredFile(Base):
         Index("ix_stored_file_app_date", "app_id", "date_created"),
         Index("ix_stored_file_expiration", "expiration_date"),
         Index("ix_stored_file_location", "location"),
+        Index(
+            "uq_stored_file_app_hash_location",
+            "app_id", "content_hash", "location",
+            unique=True,
+        ),
     )
 
 

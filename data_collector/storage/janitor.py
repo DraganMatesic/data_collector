@@ -100,11 +100,18 @@ class StorageJanitor:
                 f"Storage janitor: deleted {total_deleted} expired file(s) across {len(backend_pairs)} backend(s)",
             )
 
-    def _load_active_backends(self) -> list[tuple[FilesystemBackend, StorageBackend]]:
-        """Query the StorageBackend table for all active backends.
+    def _load_active_backends(self) -> list[tuple[FilesystemBackend, StorageBackend | None]]:
+        """Load all active backends: registered backends from the database plus the default local backend.
+
+        The default local backend (``StorageSettings.root``, location ``"local"``)
+        is always included even when no ``storage_backend`` row exists for it.
+        This ensures the zero-config deployment scenario gets retention
+        enforcement and disk monitoring without manual DBA setup.
 
         Returns:
-            List of (FilesystemBackend, StorageBackend row) pairs.
+            List of (FilesystemBackend, StorageBackend row or None) pairs.
+            The row is ``None`` for the auto-included local backend when no
+            matching ``storage_backend`` row exists.
         """
         with self._database.create_session() as session:
             statement = select(StorageBackend).where(
@@ -113,18 +120,30 @@ class StorageJanitor:
             backend_rows: list[StorageBackend] = list(
                 self._database.query(statement, session).scalars().all()
             )
-            # Expunge rows so they're usable outside the session
             for row in backend_rows:
                 session.expunge(row)
 
-        pairs: list[tuple[FilesystemBackend, StorageBackend]] = []
+        registered_locations: set[str] = set()
+        pairs: list[tuple[FilesystemBackend, StorageBackend | None]] = []
         for row in backend_rows:
+            location = str(row.location_name)
+            registered_locations.add(location)
             backend = FilesystemBackend(
                 root=Path(str(row.root_path)),
-                location=str(row.location_name),
+                location=location,
                 logger=self._logger,
             )
             pairs.append((backend, row))
+
+        # Auto-include default local backend if not already registered
+        if "local" not in registered_locations:
+            local_backend = FilesystemBackend(
+                root=self._storage_settings.root,
+                location="local",
+                logger=self._logger,
+            )
+            pairs.append((local_backend, None))
+
         return pairs
 
     def _enforce_backend_retention(self, backend: FilesystemBackend) -> int:
@@ -202,36 +221,42 @@ class StorageJanitor:
                 f"(budget {threshold_gb:.2f} GB)",
             )
 
-    def _resolve_min_free_disk_gb(self, backend_row: StorageBackend) -> float:
+    def _resolve_min_free_disk_gb(self, backend_row: StorageBackend | None) -> float:
         """Resolve the minimum free disk space threshold for a backend.
 
         Per-backend value from ``StorageBackend.min_free_disk_gb`` takes
         precedence.  Falls back to ``StorageSettings.min_free_disk_gb``.
+        When ``backend_row`` is ``None`` (auto-included local backend),
+        the global default is used.
 
         Args:
-            backend_row: The StorageBackend configuration row.
+            backend_row: The StorageBackend configuration row, or ``None``.
 
         Returns:
             Threshold in GB.
         """
-        per_backend_value = getattr(backend_row, "min_free_disk_gb", None)
-        if per_backend_value is not None:
-            return float(per_backend_value)
+        if backend_row is not None:
+            per_backend_value = getattr(backend_row, "min_free_disk_gb", None)
+            if per_backend_value is not None:
+                return float(per_backend_value)
         return self._storage_settings.min_free_disk_gb
 
-    def _resolve_max_storage_alert_gb(self, backend_row: StorageBackend) -> float | None:
+    def _resolve_max_storage_alert_gb(self, backend_row: StorageBackend | None) -> float | None:
         """Resolve the storage budget threshold for a backend.
 
         Per-backend value from ``StorageBackend.max_storage_alert_gb`` takes
         precedence.  Falls back to ``StorageSettings.max_storage_alert_gb``.
+        When ``backend_row`` is ``None`` (auto-included local backend),
+        the global default is used.
 
         Args:
-            backend_row: The StorageBackend configuration row.
+            backend_row: The StorageBackend configuration row, or ``None``.
 
         Returns:
             Threshold in GB, or ``None`` if budget alerting is disabled.
         """
-        per_backend_value = getattr(backend_row, "max_storage_alert_gb", None)
-        if per_backend_value is not None:
-            return float(per_backend_value)
+        if backend_row is not None:
+            per_backend_value = getattr(backend_row, "max_storage_alert_gb", None)
+            if per_backend_value is not None:
+                return float(per_backend_value)
         return self._storage_settings.max_storage_alert_gb

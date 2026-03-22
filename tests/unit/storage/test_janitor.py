@@ -128,6 +128,18 @@ class TestRunMaintenance:
         logger.debug.assert_called()
 
     @patch("data_collector.storage.janitor.shutil.disk_usage", return_value=_DiskUsage(100e9, 50e9, 50e9))
+    @patch("data_collector.storage.janitor.enforce_retention_by_database", return_value=0)
+    def test_auto_includes_default_local_backend(self, mock_enforce: MagicMock, mock_disk: MagicMock) -> None:
+        janitor, database, logger = _make_janitor()
+        # No backends registered in DB -- janitor should auto-include "local"
+        _setup_database_query(database, [])
+
+        janitor.run_maintenance()
+
+        # Should have called enforce for the auto-included local backend
+        assert mock_enforce.call_count == 1
+
+    @patch("data_collector.storage.janitor.shutil.disk_usage", return_value=_DiskUsage(100e9, 50e9, 50e9))
     @patch("data_collector.storage.janitor.enforce_retention_by_database", return_value=5)
     def test_logs_total_deleted_count(self, mock_enforce: MagicMock, mock_disk: MagicMock) -> None:
         janitor, database, logger = _make_janitor()
@@ -177,10 +189,17 @@ class TestDiskFreeSpace:
     @patch("data_collector.storage.janitor.enforce_retention_by_database", return_value=0)
     def test_disk_check_handles_oserror(self, mock_enforce: MagicMock) -> None:
         janitor, database, logger = _make_janitor()
-        backend_row = _make_backend_row("fs_unreachable", "//offline_server/share")
-        _setup_database_query(database, [backend_row])
+        # Include "local" to suppress auto-include, test only the unreachable backend
+        local_row = _make_backend_row("local", "/storage/local")
+        unreachable_row = _make_backend_row("fs_unreachable", "//offline_server/share")
+        _setup_database_query(database, [local_row, unreachable_row])
 
-        with patch("data_collector.storage.janitor.shutil.disk_usage", side_effect=OSError("Network path not found")):
+        def selective_disk_usage(path: object) -> _DiskUsage:
+            if "offline_server" in str(path):
+                raise OSError("Network path not found")
+            return _DiskUsage(100e9, 50e9, 50e9)
+
+        with patch("data_collector.storage.janitor.shutil.disk_usage", side_effect=selective_disk_usage):
             janitor.run_maintenance()
 
         disk_warnings = [
@@ -196,13 +215,14 @@ class TestPerBackendThresholds:
     @patch("data_collector.storage.janitor.enforce_retention_by_database", return_value=0)
     def test_per_backend_overrides_global(self, mock_enforce: MagicMock) -> None:
         janitor, database, logger = _make_janitor(min_free_disk_gb=10.0, max_storage_alert_gb=100.0)
-        # Backend has its own thresholds: 50 GB free, 500 GB budget
-        backend_row = _make_backend_row(
+        # Include "local" to suppress auto-include, test only the hr backend
+        local_row = _make_backend_row("local", "/storage/local")
+        hr_row = _make_backend_row(
             "fs_market_hr", "/storage/hr",
             min_free_disk_gb=50.0,
             max_storage_alert_gb=500.0,
         )
-        _setup_database_query(database, [backend_row], storage_bytes=200 * 1024 ** 3)
+        _setup_database_query(database, [local_row, hr_row], storage_bytes=200 * 1024 ** 3)
 
         # 30 GB free < 50 GB per-backend threshold (would pass 10 GB global)
         with patch("data_collector.storage.janitor.shutil.disk_usage", return_value=_DiskUsage(1000e9, 970e9, 30e9)):

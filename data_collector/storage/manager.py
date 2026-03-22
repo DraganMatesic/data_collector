@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from data_collector.enums.storage import FileRetention
@@ -203,7 +204,17 @@ class StorageManager:
             retention_category=retention_category,
             expiration_date=expiration_date,
         )
-        self._database.add(stored_file, session)
+        try:
+            self._database.add(stored_file, session)
+            session.flush()
+        except IntegrityError:
+            # Concurrent insert won the race -- unique constraint on
+            # (app_id, content_hash, location) prevents duplicates.
+            session.rollback()
+            self._logger.debug(
+                f"Dedup: concurrent insert for hash {content_hash[:12]} on {self._backend.location_name}",
+            )
+            return absolute_path
 
         self._logger.info(
             f"Stored {original_filename} ({len(content)} bytes) as {relative_path} "
@@ -486,29 +497,25 @@ class StorageManager:
         )
 
     def _find_duplicate(self, content_hash: str, session: Session) -> Path | None:
-        """Check the database for an existing file with the same content hash.
+        """Check the database for an existing file with the same content hash on this backend.
 
-        Searches across **all** locations for this app.  If the content
-        already exists anywhere (local or remote), the file is considered
-        a duplicate regardless of which backend currently holds it.
-
-        When a match is found on the current backend, returns its absolute
-        path.  When the match is on a different backend, returns a
-        synthetic path using the current backend root (the physical file
-        may not exist locally, but the caller only needs a non-None value
-        to skip re-storing).
+        Only matches files on the **current** backend's location.  If the
+        same content exists on a different backend, it is not considered a
+        duplicate -- the caller must store it on this backend separately
+        (each location tracks its own ``StoredFile`` row).
 
         Args:
             content_hash: SHA-256 hex digest to search for.
             session: Active SQLAlchemy session.
 
         Returns:
-            Absolute path referencing the existing file, or ``None`` if
-            no duplicate exists anywhere.
+            Absolute path of the existing file on this backend, or
+            ``None`` if no duplicate exists on this backend.
         """
         statement = select(StoredFile).where(
             StoredFile.app_id == self._app_id,
             StoredFile.content_hash == content_hash,
+            StoredFile.location == self._backend.location_name,
         ).limit(1)
         existing = self._database.query(statement, session).scalars().first()
         if existing is not None:
