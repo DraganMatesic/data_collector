@@ -139,6 +139,7 @@ def enforce_retention_by_database(
     database: Database,
     backend: BaseStorageBackend,
     *,
+    app_id: str | None = None,
     logger: logging.Logger | None = None,
 ) -> int:
     """Delete expired files using database-driven retention.
@@ -146,6 +147,10 @@ def enforce_retention_by_database(
     Queries ``StoredFile`` rows whose ``expiration_date`` has passed and
     whose ``location`` matches the backend, deletes the physical files
     via the backend, then removes the corresponding database rows.
+
+    When ``app_id`` is provided, only files belonging to that application
+    are considered.  When ``None``, all expired files on the backend are
+    processed (used by ``StorageJanitor`` for cross-app maintenance).
 
     This is the primary retention mechanism.  Each file's expiration is
     computed at store time from ``CodebookFileRetention.retention_days``.
@@ -167,6 +172,8 @@ def enforce_retention_by_database(
             StoredFile.expiration_date <= now,
             StoredFile.location == backend.location_name,
         )
+        if app_id is not None:
+            statement = statement.where(StoredFile.app_id == app_id)
         expired_files: list[StoredFile] = list(
             database.query(statement, session).scalars().all()
         )

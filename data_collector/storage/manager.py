@@ -229,10 +229,18 @@ class StorageManager:
             # (app_id, content_hash, location) prevents duplicates.
             # Roll back only the savepoint, not the caller's pending writes.
             savepoint.rollback()
+            # Clean up the orphaned file we wrote before the failed insert
+            self._backend.delete(relative_path)
+            # Resolve the winning row's path
+            winning_row = self._find_duplicate(content_hash, session)
+            if winning_row is not None:
+                winning_path = self._backend.root / Path(str(winning_row.stored_path))
+            else:
+                winning_path = absolute_path
             self._logger.debug(
                 f"Dedup: concurrent insert for hash {content_hash[:12]} on {self._backend.location_name}",
             )
-            return absolute_path
+            return winning_path
 
         self._logger.info(
             f"Stored {original_filename} ({len(content)} bytes) as {relative_path} "
@@ -362,12 +370,15 @@ class StorageManager:
             target_row = self._database.query(existing_on_target, session).scalars().first()
 
             if target_row is not None:
-                # Target row exists -- delete the source row instead of updating
+                # Target row exists -- apply retention override if requested, then delete source
+                if retention_category is not None:
+                    target_row.retention_category = target_retention  # type: ignore[assignment]
+                    target_row.expiration_date = target_expiration  # type: ignore[assignment]
                 session.delete(stored_file)
                 session.flush()
                 self._logger.info(
                     f"Moved: {source_relative_path} -> {target_backend.location_name} "
-                    f"(source row deleted, target row exists)",
+                    f"(source row deleted, target row updated)",
                 )
             else:
                 # No target row -- update the source row to point to the target
@@ -530,6 +541,7 @@ class StorageManager:
         return enforce_retention_by_database(
             self._database,
             self._backend,
+            app_id=self._app_id,
             logger=self._logger,
         )
 
