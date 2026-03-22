@@ -7,6 +7,8 @@ from pathlib import Path
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from data_collector.enums.storage import FileRetention
+
 _VALID_DIRECTORY_DEPTHS = {"flat", "yearly", "monthly", "daily", "hourly"}
 
 
@@ -18,7 +20,7 @@ class StorageSettings(BaseSettings):
         DC_STORAGE_ROOT                 -- Base directory for file storage.
         DC_STORAGE_DEDUPLICATE          -- Enable SHA-256 hash-based deduplication.
         DC_STORAGE_DIRECTORY_DEPTH      -- Date folder granularity (flat/yearly/monthly/daily/hourly).
-        DC_STORAGE_DEFAULT_RETENTION    -- Default FileRetention category name.
+        DC_STORAGE_DEFAULT_RETENTION   -- Default FileRetention category (integer ID).
         DC_STORAGE_MIN_FREE_DISK_GB    -- Alert when physical disk free space drops below (GB).
         DC_STORAGE_MAX_STORAGE_ALERT_GB -- Optional: alert when per-backend stored data exceeds (GB).
 
@@ -48,8 +50,8 @@ class StorageSettings(BaseSettings):
     # -- Directory organization --
     directory_depth: str = "daily"
 
-    # -- Retention defaults --
-    default_retention: str = "standard"
+    # -- Retention default --
+    default_retention: int = FileRetention.STANDARD
 
     # -- Alerting (global defaults, overridden per-backend in StorageBackend table) --
     min_free_disk_gb: float = 10.0

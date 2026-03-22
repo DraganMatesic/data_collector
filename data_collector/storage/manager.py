@@ -385,8 +385,6 @@ class StorageManager:
         )
 
         if delete_source:
-            resolved_source.delete(source_relative_path)
-
             # Check if the target already has a row (e.g., from a previous move or copy)
             existing_on_target = select(StoredFile).where(
                 StoredFile.app_id == str(stored_file.app_id),
@@ -402,6 +400,8 @@ class StorageManager:
                     target_row.expiration_date = target_expiration  # type: ignore[assignment]
                 session.delete(stored_file)
                 session.flush()
+                # Delete source file only after DB changes are flushed successfully
+                resolved_source.delete(source_relative_path)
                 self._logger.info(
                     f"Moved: {source_relative_path} -> {target_backend.location_name} "
                     f"(source row deleted, target row updated)",
@@ -422,6 +422,8 @@ class StorageManager:
                     stored_file.retention_category = target_retention  # type: ignore[assignment]
                     stored_file.expiration_date = target_expiration  # type: ignore[assignment]
                 session.flush()
+                # Delete source file only after DB changes are flushed successfully
+                resolved_source.delete(source_relative_path)
                 self._logger.info(
                     f"Moved: {source_relative_path} -> {target_backend.location_name}",
                 )
@@ -460,17 +462,22 @@ class StorageManager:
                     session.flush()
                 except IntegrityError:
                     copy_savepoint.rollback()
-                    # Resolve the winning row's path; clean up orphan if different
+                    # Distinguish dedup race from FK violation
                     winning_copy = self._database.query(existing_copy, session).scalars().first()
                     if winning_copy is not None:
                         winning_copy_path = target_backend.root / Path(str(winning_copy.stored_path))
                         if target_absolute_path != winning_copy_path:
                             target_backend.delete(source_relative_path)
                         target_absolute_path = winning_copy_path
-                    self._logger.debug(
-                        f"Copy already exists on {target_backend.location_name}: "
-                        f"{source_relative_path} (concurrent insert)",
-                    )
+                        self._logger.debug(
+                            f"Copy already exists on {target_backend.location_name}: "
+                            f"{source_relative_path} (concurrent insert)",
+                        )
+                    else:
+                        # Not a dedup race -- FK violation or other constraint.
+                        # Clean up orphaned file on target and re-raise.
+                        target_backend.delete(source_relative_path)
+                        raise
                 else:
                     self._logger.info(
                         f"Copied: {source_relative_path} -> {target_backend.location_name}",

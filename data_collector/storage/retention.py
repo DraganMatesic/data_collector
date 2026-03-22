@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, select
 
-from data_collector.enums.storage import FileRetention
 from data_collector.tables.storage import CodebookFileRetention, StoredFile
 
 if TYPE_CHECKING:
@@ -30,12 +29,6 @@ if TYPE_CHECKING:
     from data_collector.settings.storage import StorageSettings
     from data_collector.storage.backend import BaseStorageBackend
     from data_collector.utilities.database.main import Database
-
-
-# -- Auto-derived from FileRetention enum: maps lowercase name to member --
-_RETENTION_NAME_TO_ENUM: dict[str, FileRetention] = {
-    member.name.lower(): member for member in FileRetention
-}
 
 
 @dataclass(frozen=True)
@@ -58,25 +51,19 @@ class RetentionPolicy:
     ) -> RetentionPolicy:
         """Create a RetentionPolicy from StorageSettings and the codebook table.
 
-        Resolves ``settings.default_retention`` to a ``FileRetention`` enum
-        value, then queries ``CodebookFileRetention.retention_days`` from
-        the database.
+        Queries ``CodebookFileRetention.retention_days`` for the category
+        ID configured in ``settings.default_retention``.
 
         Args:
-            settings: Storage configuration with ``default_retention`` name.
+            settings: Storage configuration with ``default_retention`` category ID.
             database: Database instance for codebook lookup.
             session: Active SQLAlchemy session.
 
         Returns:
             A RetentionPolicy with ``max_age_days`` from the database.
         """
-        retention_name = settings.default_retention.lower()
-        retention_enum = _RETENTION_NAME_TO_ENUM.get(retention_name)
-        if retention_enum is None:
-            return cls(max_age_days=None)
-
         statement = select(CodebookFileRetention.retention_days).where(
-            CodebookFileRetention.id == retention_enum.value,
+            CodebookFileRetention.id == settings.default_retention,
         )
         retention_days = database.query(statement, session).scalar_one_or_none()
         return cls(max_age_days=retention_days)

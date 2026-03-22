@@ -28,7 +28,7 @@ class TestDefaults:
     def test_default_retention_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DC_STORAGE_DEFAULT_RETENTION", raising=False)
         settings = StorageSettings()
-        assert settings.default_retention == "standard"
+        assert settings.default_retention == 3  # FileRetention.STANDARD
 
     def test_min_free_disk_gb_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DC_STORAGE_MIN_FREE_DISK_GB", raising=False)
@@ -60,9 +60,9 @@ class TestEnvPrefix:
         assert settings.directory_depth == "monthly"
 
     def test_default_retention_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DC_STORAGE_DEFAULT_RETENTION", "temporary")
+        monkeypatch.setenv("DC_STORAGE_DEFAULT_RETENTION", "9")
         settings = StorageSettings()
-        assert settings.default_retention == "temporary"
+        assert settings.default_retention == 9  # FileRetention.PERMANENT
 
     def test_min_free_disk_gb_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DC_STORAGE_MIN_FREE_DISK_GB", "50.0")
@@ -83,7 +83,7 @@ class TestDirectConstruction:
             root=Path("/custom/path"),
             deduplicate=False,
             directory_depth="hourly",
-            default_retention="permanent",
+            default_retention=9,
             min_free_disk_gb=25.0,
             max_storage_alert_gb=50.0,
         )
@@ -91,7 +91,7 @@ class TestDirectConstruction:
         assert settings.root == Path("/custom/path")
         assert settings.deduplicate is False
         assert settings.directory_depth == "hourly"
-        assert settings.default_retention == "permanent"
+        assert settings.default_retention == 9
         assert settings.min_free_disk_gb == 25.0
         assert settings.max_storage_alert_gb == 50.0
 
