@@ -237,26 +237,23 @@ class StorageManager:
             self._database.add(stored_file, session)
             session.flush()
         except IntegrityError:
-            # Concurrent insert won the race -- unique constraint on
-            # (app_id, content_hash, location) prevents duplicates.
-            # Roll back only the savepoint, not the caller's pending writes.
             savepoint.rollback()
-            # Resolve the winning row to get its actual path
+            # Distinguish dedup race (unique constraint) from other FK errors
+            # by checking if a row with this hash now exists on this backend.
             winning_row = self._find_duplicate(content_hash, session)
             if winning_row is not None:
+                # Dedup race: another insert won. Resolve the winner's path.
                 winning_path = self._backend.root / Path(str(winning_row.stored_path))
-                # Delete our file only if it differs from the winner's path
-                # (e.g., different extension produced a different relative_path).
-                # If paths match, both writers wrote identical bytes to the same
-                # file -- leave it in place for the winning row.
                 if absolute_path != winning_path:
                     self._backend.delete(relative_path)
-            else:
-                winning_path = absolute_path
-            self._logger.debug(
-                f"Dedup: concurrent insert for hash {content_hash[:12]} on {self._backend.location_name}",
-            )
-            return winning_path
+                self._logger.debug(
+                    f"Dedup: concurrent insert for hash {content_hash[:12]} on {self._backend.location_name}",
+                )
+                return winning_path
+            # Not a dedup race -- likely FK violation (invalid retention_category).
+            # Clean up the orphaned file and re-raise.
+            self._backend.delete(relative_path)
+            raise
 
         self._logger.info(
             f"Stored {original_filename} ({len(content)} bytes) as {relative_path} "
@@ -463,6 +460,13 @@ class StorageManager:
                     session.flush()
                 except IntegrityError:
                     copy_savepoint.rollback()
+                    # Resolve the winning row's path; clean up orphan if different
+                    winning_copy = self._database.query(existing_copy, session).scalars().first()
+                    if winning_copy is not None:
+                        winning_copy_path = target_backend.root / Path(str(winning_copy.stored_path))
+                        if target_absolute_path != winning_copy_path:
+                            target_backend.delete(source_relative_path)
+                        target_absolute_path = winning_copy_path
                     self._logger.debug(
                         f"Copy already exists on {target_backend.location_name}: "
                         f"{source_relative_path} (concurrent insert)",
