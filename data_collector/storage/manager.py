@@ -334,14 +334,33 @@ class StorageManager:
 
         if delete_source:
             resolved_source.delete(source_relative_path)
-            stored_file.location = target_backend.location_name  # type: ignore[assignment]
-            if retention_category is not None:
-                stored_file.retention_category = target_retention  # type: ignore[assignment]
-                stored_file.expiration_date = target_expiration  # type: ignore[assignment]
-            session.flush()
-            self._logger.info(
-                f"Moved: {source_relative_path} -> {target_backend.location_name}",
-            )
+
+            # Check if the target already has a row (e.g., from a previous move or copy)
+            existing_on_target = select(StoredFile).where(
+                StoredFile.app_id == str(stored_file.app_id),
+                StoredFile.content_hash == str(stored_file.content_hash),
+                StoredFile.location == target_backend.location_name,
+            ).limit(1)
+            target_row = self._database.query(existing_on_target, session).scalars().first()
+
+            if target_row is not None:
+                # Target row exists -- delete the source row instead of updating
+                session.delete(stored_file)
+                session.flush()
+                self._logger.info(
+                    f"Moved: {source_relative_path} -> {target_backend.location_name} "
+                    f"(source row deleted, target row exists)",
+                )
+            else:
+                # No target row -- update the source row to point to the target
+                stored_file.location = target_backend.location_name  # type: ignore[assignment]
+                if retention_category is not None:
+                    stored_file.retention_category = target_retention  # type: ignore[assignment]
+                    stored_file.expiration_date = target_expiration  # type: ignore[assignment]
+                session.flush()
+                self._logger.info(
+                    f"Moved: {source_relative_path} -> {target_backend.location_name}",
+                )
         else:
             # Check if a copy already exists on the target backend
             existing_copy = select(StoredFile).where(

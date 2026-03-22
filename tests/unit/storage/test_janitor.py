@@ -119,17 +119,9 @@ class TestRunMaintenance:
         ]
         assert len(budget_warnings) == 0
 
-    def test_empty_backends_returns_cleanly(self) -> None:
-        janitor, database, logger = _make_janitor()
-        _setup_database_query(database, [])
-
-        janitor.run_maintenance()
-
-        logger.debug.assert_called()
-
     @patch("data_collector.storage.janitor.shutil.disk_usage", return_value=_DiskUsage(100e9, 50e9, 50e9))
     @patch("data_collector.storage.janitor.enforce_retention_by_database", return_value=0)
-    def test_auto_includes_default_local_backend(self, mock_enforce: MagicMock, mock_disk: MagicMock) -> None:
+    def test_auto_includes_default_local_when_no_db_rows(self, mock_enforce: MagicMock, mock_disk: MagicMock) -> None:
         janitor, database, logger = _make_janitor()
         # No backends registered in DB -- janitor should auto-include "local"
         _setup_database_query(database, [])
@@ -137,6 +129,19 @@ class TestRunMaintenance:
         janitor.run_maintenance()
 
         # Should have called enforce for the auto-included local backend
+        assert mock_enforce.call_count == 1
+
+    @patch("data_collector.storage.janitor.shutil.disk_usage", return_value=_DiskUsage(100e9, 50e9, 50e9))
+    @patch("data_collector.storage.janitor.enforce_retention_by_database", return_value=0)
+    def test_no_duplicate_local_when_already_registered(self, mock_enforce: MagicMock, mock_disk: MagicMock) -> None:
+        janitor, database, logger = _make_janitor()
+        # "local" is registered in DB -- should NOT be auto-included again
+        local_row = _make_backend_row("local", "/storage")
+        _setup_database_query(database, [local_row])
+
+        janitor.run_maintenance()
+
+        # Exactly 1 backend, not 2
         assert mock_enforce.call_count == 1
 
     @patch("data_collector.storage.janitor.shutil.disk_usage", return_value=_DiskUsage(100e9, 50e9, 50e9))
