@@ -181,11 +181,27 @@ class StorageManager:
             raise ValueError(message)
 
         if self._settings.deduplicate:
-            existing_path = self._find_duplicate(content_hash, session)
-            if existing_path is not None:
-                self._logger.debug(
-                    f"Dedup: file with hash {content_hash[:12]} already exists at {existing_path}",
-                )
+            existing_row = self._find_duplicate(content_hash, session)
+            if existing_row is not None:
+                existing_path = self._backend.root / Path(str(existing_row.stored_path))
+                # Update metadata if the caller provided different values
+                changed = False
+                if str(existing_row.original_filename) != original_filename:
+                    existing_row.original_filename = original_filename  # type: ignore[assignment]
+                    changed = True
+                if int(existing_row.retention_category) != retention_category:  # type: ignore[arg-type]
+                    existing_row.retention_category = retention_category  # type: ignore[assignment]
+                    existing_row.expiration_date = self._compute_expiration_date(retention_category, session)  # type: ignore[assignment]
+                    changed = True
+                if changed:
+                    session.flush()
+                    self._logger.debug(
+                        f"Dedup: updated metadata for hash {content_hash[:12]} on {self._backend.location_name}",
+                    )
+                else:
+                    self._logger.debug(
+                        f"Dedup: file with hash {content_hash[:12]} already exists at {existing_path}",
+                    )
                 return existing_path
 
         relative_path = self._build_relative_path(content_hash, extension)
@@ -204,13 +220,15 @@ class StorageManager:
             retention_category=retention_category,
             expiration_date=expiration_date,
         )
+        savepoint = session.begin_nested()
         try:
             self._database.add(stored_file, session)
             session.flush()
         except IntegrityError:
             # Concurrent insert won the race -- unique constraint on
             # (app_id, content_hash, location) prevents duplicates.
-            session.rollback()
+            # Roll back only the savepoint, not the caller's pending writes.
+            savepoint.rollback()
             self._logger.debug(
                 f"Dedup: concurrent insert for hash {content_hash[:12]} on {self._backend.location_name}",
             )
@@ -515,7 +533,7 @@ class StorageManager:
             logger=self._logger,
         )
 
-    def _find_duplicate(self, content_hash: str, session: Session) -> Path | None:
+    def _find_duplicate(self, content_hash: str, session: Session) -> StoredFile | None:
         """Check the database for an existing file with the same content hash on this backend.
 
         Only matches files on the **current** backend's location.  If the
@@ -528,18 +546,15 @@ class StorageManager:
             session: Active SQLAlchemy session.
 
         Returns:
-            Absolute path of the existing file on this backend, or
-            ``None`` if no duplicate exists on this backend.
+            The existing ``StoredFile`` row on this backend, or ``None``
+            if no duplicate exists.
         """
         statement = select(StoredFile).where(
             StoredFile.app_id == self._app_id,
             StoredFile.content_hash == content_hash,
             StoredFile.location == self._backend.location_name,
         ).limit(1)
-        existing = self._database.query(statement, session).scalars().first()
-        if existing is not None:
-            return self._backend.root / Path(str(existing.stored_path))
-        return None
+        return self._database.query(statement, session).scalars().first()
 
     def _build_relative_path(self, content_hash: str, extension: str) -> Path:
         """Build the relative storage path for a file.
