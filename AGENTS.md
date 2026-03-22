@@ -38,24 +38,19 @@ All new code must pass all four gates. Do not skip any.
 
 ## Code Review Protocol (mandatory before PR)
 
-After quality gates pass, perform an adversarial review before declaring code ready:
+After quality gates pass, perform the full self-review protocol defined in [`REVIEW.md`](REVIEW.md).
 
-1. **Trace every public method end-to-end.** Follow the call chain from entry point to database/filesystem. Check what filters, constraints, and error handling exist at each layer. Do not review methods in isolation.
+The protocol has seven phases executed in order. Fix issues as they are found. Do not declare code ready until all phases pass:
 
-2. **Ask "how does this break?" for every code path.** Test mentally with:
-   - Concurrent callers (race conditions, duplicate inserts, unique constraint violations)
-   - Repeated execution (idempotency -- run the same operation twice, verify no side effects)
-   - Cross-component interaction (two apps sharing a backend, two managers on the same DB)
-   - Missing/deleted data (file already gone, row already deleted, backend unreachable)
-   - Partial failure (DB commit succeeds but file write fails, or vice versa)
+1. **Scope** -- diff matches request, no drift, no debug artifacts
+2. **Conventions** -- naming, imports, ORM patterns, hashing, logging
+3. **Data Integrity** -- scope filters, idempotency, guard clauses, type boundaries, API contract, configuration consistency, cross-file impact, workflow state
+4. **Error Handling** -- recovery validity, partial failure, resource lifecycle, exception propagation
+5. **Concurrency** -- thread safety, race conditions, abort signals
+6. **Security** -- injection prevention, credential safety
+7. **Test Adequacy** -- code path coverage, edge cases, idempotency tests, mock discipline
 
-3. **Verify every database query has correct filters.** If a method belongs to a specific app, the query must filter by `app_id`. If it belongs to a specific backend, filter by `location`. No cross-scope data leaks.
-
-4. **Never classify a known issue as "acceptable for now."** Enterprise code has no deferred fixes. If you find a race condition, missing constraint, or data integrity gap -- fix it before PR. If it cannot be fixed in this scope, document it as a known limitation in the PR description.
-
-5. **Check return values after error recovery.** After catching an exception and recovering (rollback, retry, skip), verify the returned value is still valid. A rolled-back insert means the returned path/object may reference non-existent state.
-
-6. **Run examples end-to-end twice.** First run creates state, second run tests idempotency. Both must succeed with identical final state.
+This protocol governs self-review only. External reviewers (Codex PR review, human reviewers) operate independently.
 
 ## Housekeeping
 
@@ -104,6 +99,7 @@ After quality gates pass, perform an adversarial review before declaring code re
   - **Stored procedures**: `database.execute(sql_text, session)` -- never `session.execute(text(...))`
   - `session.commit()` and `session.rollback()` are allowed directly (session lifecycle, not DB operations)
   - Reason: `Database` methods enable automatic dependency tracking via `AppDbObjects`
+- New ORM columns: use `mapped_column()` with `Mapped[T]` annotations (SQLAlchemy 2.x). Existing `Column()` is accepted until migration
 - App namespace: `data_collector/<country>/<parent>/<app>/`
 - Enum namespace: `data_collector/enums/` (locked)
 - Request import: `from data_collector.utilities.request import Request`
