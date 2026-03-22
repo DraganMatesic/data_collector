@@ -33,6 +33,7 @@ from data_collector.tables.pipeline import (
 from data_collector.tables.proxy import ProxyBlacklist, ProxyReservation
 from data_collector.tables.runtime import CodebookRuntimeCodes, Runtime
 from data_collector.tables.shared import Base
+from data_collector.tables.storage import CodebookFileRetention, StorageBackend, StoredFile
 
 __all__ = [
     "AppDbObjects",
@@ -53,6 +54,7 @@ __all__ = [
     "CodebookCommandFlags",
     "CodebookCommandList",
     "CodebookFatalFlags",
+    "CodebookFileRetention",
     "CodebookLogLevel",
     "CodebookPipelineStage",
     "CodebookPipelineStatus",
@@ -71,4 +73,6 @@ __all__ = [
     "ProxyReservation",
     "RunStatus",
     "Runtime",
+    "StorageBackend",
+    "StoredFile",
 ]

@@ -9,6 +9,7 @@ from data_collector.enums.notifications import AlertSeverity
 from data_collector.enums.pipeline import PipelineStage, PipelineStatus
 from data_collector.enums.runtime import AppType, FatalFlag, RunStatus, RuntimeExitCode
 from data_collector.enums.scraping import ErrorCategory
+from data_collector.enums.storage import FileRetention
 
 __all__ = [
     "AppType",
@@ -20,6 +21,7 @@ __all__ = [
     "DbObjectType",
     "ErrorCategory",
     "FatalFlag",
+    "FileRetention",
     "LogLevel",
     "PipelineStage",
     "PipelineStatus",
