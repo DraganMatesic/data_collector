@@ -184,6 +184,13 @@ class StorageManager:
             existing_row = self._find_duplicate(content_hash, session)
             if existing_row is not None:
                 existing_path = self._backend.root / Path(str(existing_row.stored_path))
+                # Verify the physical file still exists -- re-store if missing
+                if not existing_path.is_file():
+                    existing_path.parent.mkdir(parents=True, exist_ok=True)
+                    existing_path.write_bytes(content)
+                    self._logger.info(
+                        f"Dedup: re-stored missing file for hash {content_hash[:12]} at {existing_path}",
+                    )
                 # Update metadata if the caller provided different values
                 changed = False
                 if str(existing_row.original_filename) != original_filename:
@@ -350,6 +357,19 @@ class StorageManager:
         resolved_source = source_backend or self._backend
         source_relative_path = Path(str(stored_file.stored_path))
         target_absolute_path = target_backend.root / source_relative_path
+
+        # Same-backend transfer: no file movement needed, just apply retention
+        if resolved_source.location_name == target_backend.location_name:
+            if retention_category is not None:
+                target_retention_value = retention_category
+                stored_file.retention_category = target_retention_value  # type: ignore[assignment]
+                stored_file.expiration_date = self._compute_expiration_date(target_retention_value, session)  # type: ignore[assignment]
+                session.flush()
+            self._logger.debug(
+                f"Transfer: source and target are the same backend '{target_backend.location_name}', "
+                f"applied retention override only",
+            )
+            return target_absolute_path
 
         if not target_backend.exists(source_relative_path):
             content = resolved_source.retrieve(source_relative_path)
