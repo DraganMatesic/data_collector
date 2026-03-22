@@ -73,6 +73,7 @@ All new code must pass all four gates. Do not skip any.
 - SHA hashing via `bulk_hash()` before `merge()`. Never override `compare_key` when `sha` is available
 - Settings via Pydantic (`BaseSettings` with `env_prefix`). Never hardcode credentials or connection strings
 - Logging via framework `LoggingService`. Never use `print()` or bare `logging.getLogger()` in app code
+- Log messages: always use f-strings, never `%`-style positional formatting. structlog stores the raw format string as `msg` without interpolating `%s`/`%d` arguments. Example: `logger.info(f"Stored {filename} ({size} bytes)")` not `logger.info("Stored %s (%d bytes)", filename, size)`
 - No direct SQL in application code. Use SQLAlchemy ORM and `Database` class methods
 - All database operations must go through the `Database` object, never directly on the session:
   - **SELECT**: `database.query(select(...), session)` -- never `session.execute(select(...))`
