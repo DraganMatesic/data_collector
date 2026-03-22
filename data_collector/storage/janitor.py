@@ -114,12 +114,19 @@ class StorageJanitor:
             matching ``storage_backend`` row exists.
         """
         with self._database.create_session() as session:
-            statement = select(StorageBackend).where(
+            # Query active backends for maintenance
+            active_statement = select(StorageBackend).where(
                 StorageBackend.is_active.is_(True),
             )
             backend_rows: list[StorageBackend] = list(
-                self._database.query(statement, session).scalars().all()
+                self._database.query(active_statement, session).scalars().all()
             )
+            # Also check if "local" exists as inactive (DBA explicitly disabled it)
+            all_local_statement = select(StorageBackend).where(
+                StorageBackend.location_name == "local",
+            )
+            local_row_exists = self._database.query(all_local_statement, session).scalars().first() is not None
+
             for row in backend_rows:
                 session.expunge(row)
 
@@ -135,8 +142,10 @@ class StorageJanitor:
             )
             pairs.append((backend, row))
 
-        # Auto-include default local backend if not already registered
-        if "local" not in registered_locations:
+        # Auto-include default local backend only if no "local" row exists at all
+        # (neither active nor inactive). If DBA registered and disabled "local",
+        # respect that decision -- do not auto-include.
+        if "local" not in registered_locations and not local_row_exists:
             local_backend = FilesystemBackend(
                 root=self._storage_settings.root,
                 location="local",

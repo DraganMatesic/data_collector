@@ -700,24 +700,6 @@ class TestRetentionExpiration:
         assert stored_file.expiration_date is not None
         assert stored_file.retention_category == FileRetention.STANDARD
 
-    def test_retention_days_cached_per_instance(self, tmp_path: Path) -> None:
-        database = _make_database(retention_days=365)
-        manager = _make_manager(tmp_path, database=database)
-        session = MagicMock()
-
-        manager.store(b"first", "txt", original_filename="a.txt", session=session)
-        query_count_after_first = database.query.call_count
-
-        manager.store(b"second", "txt", original_filename="b.txt", session=session)
-        query_count_after_second = database.query.call_count
-
-        # Second store should make fewer queries than the first
-        # (retention lookup is cached, only dedup query remains)
-        first_store_queries = query_count_after_first
-        second_store_queries = query_count_after_second - query_count_after_first
-        assert second_store_queries < first_store_queries
-
-
 class TestResolveBackend:
     """Tests for StorageManager.resolve_backend() and string backend parameter."""
 

@@ -55,17 +55,32 @@ def _setup_database_query(
     database: MagicMock,
     backend_rows: list[MagicMock],
     storage_bytes: int = 0,
+    *,
+    local_row_exists: bool = False,
 ) -> None:
-    """Configure mock database: first query returns backends, rest return storage size."""
+    """Configure mock database for janitor queries.
+
+    Query routing:
+    - Query 1 (active backends): returns backend_rows
+    - Query 2 ("local" existence check): returns based on local_row_exists
+    - Remaining queries (storage size): returns storage_bytes
+    """
     call_count = 0
+    has_local_in_rows = any(getattr(row, "location_name", None) == "local" for row in backend_rows)
 
     def query_side_effect(statement: object, session: object, **kwargs: object) -> MagicMock:
         nonlocal call_count
         call_count += 1
         result = MagicMock()
         if call_count == 1:
+            # Active backends query
             result.scalars.return_value.all.return_value = backend_rows
+        elif call_count == 2:
+            # "local" existence check
+            local_exists = has_local_in_rows or local_row_exists
+            result.scalars.return_value.first.return_value = MagicMock() if local_exists else None
         else:
+            # Storage size queries
             result.scalar_one.return_value = storage_bytes
         return result
 
@@ -143,6 +158,18 @@ class TestRunMaintenance:
 
         # Exactly 1 backend, not 2
         assert mock_enforce.call_count == 1
+
+    @patch("data_collector.storage.janitor.shutil.disk_usage", return_value=_DiskUsage(100e9, 50e9, 50e9))
+    @patch("data_collector.storage.janitor.enforce_retention_by_database", return_value=0)
+    def test_respects_inactive_local_backend(self, mock_enforce: MagicMock, mock_disk: MagicMock) -> None:
+        janitor, database, logger = _make_janitor()
+        # "local" exists but is inactive -- should NOT be auto-included
+        _setup_database_query(database, [], local_row_exists=True)
+
+        janitor.run_maintenance()
+
+        # No backends processed (active list empty, local exists but inactive)
+        assert mock_enforce.call_count == 0
 
     @patch("data_collector.storage.janitor.shutil.disk_usage", return_value=_DiskUsage(100e9, 50e9, 50e9))
     @patch("data_collector.storage.janitor.enforce_retention_by_database", return_value=5)

@@ -121,10 +121,15 @@ class StorageManager:
         elif backend is not None:
             self._backend = backend
         else:
-            self._backend = FilesystemBackend(self._settings.root, location="local")
+            # Try registry first (DBA may have customized the "local" root),
+            # fall back to StorageSettings.root for zero-config deployments.
+            try:
+                with database.create_session() as session:
+                    self._backend = self.resolve_backend(database, "local", session, logger=self._logger)
+            except ValueError:
+                self._backend = FilesystemBackend(self._settings.root, location="local")
         self._app_id = get_app_id(group, parent, app_name)
         self._app_relative_root = Path(group) / parent / app_name
-        self._retention_cache: dict[int, int | None] = {}
 
     @property
     def app_directory(self) -> Path:
@@ -430,7 +435,12 @@ class StorageManager:
                 StoredFile.content_hash == str(stored_file.content_hash),
                 StoredFile.location == target_backend.location_name,
             ).limit(1)
-            if self._database.query(existing_copy, session).scalars().first() is not None:
+            existing_copy_row = self._database.query(existing_copy, session).scalars().first()
+            if existing_copy_row is not None:
+                if retention_category is not None:
+                    existing_copy_row.retention_category = target_retention  # type: ignore[assignment]
+                    existing_copy_row.expiration_date = target_expiration  # type: ignore[assignment]
+                    session.flush()
                 self._logger.debug(
                     f"Copy already exists on {target_backend.location_name}: {source_relative_path}",
                 )
@@ -656,8 +666,9 @@ class StorageManager:
     def _get_retention_days(self, retention_category: int, session: Session) -> int | None:
         """Look up retention_days from the CodebookFileRetention table.
 
-        Results are cached per ``StorageManager`` instance to avoid
-        repeated queries for the same category within a session.
+        Always queries the database to pick up DBA runtime changes.
+        The codebook table has very few rows (~9), so the overhead
+        is negligible compared to file I/O.
 
         Args:
             retention_category: Retention category ID.
@@ -666,9 +677,6 @@ class StorageManager:
         Returns:
             Number of days to retain, or ``None`` for permanent.
         """
-        if retention_category in self._retention_cache:
-            return self._retention_cache[retention_category]
-
         # Query the full row to distinguish "category exists with NULL days"
         # (PERMANENT) from "category does not exist" (misconfiguration).
         statement = select(CodebookFileRetention).where(
@@ -680,9 +688,6 @@ class StorageManager:
                 f"Retention category {retention_category} not found in codebook, "
                 f"treating as permanent (no expiration)",
             )
-            self._retention_cache[retention_category] = None
             return None
 
-        retention_days: int | None = int(row.retention_days) if row.retention_days is not None else None  # type: ignore[arg-type]
-        self._retention_cache[retention_category] = retention_days
-        return retention_days
+        return int(row.retention_days) if row.retention_days is not None else None  # type: ignore[arg-type]
