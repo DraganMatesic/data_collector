@@ -26,6 +26,8 @@ def _make_settings(**overrides: object) -> MagicMock:
         "retention_enabled": False,
         "retention_check_interval": 3600,
         "shutdown_timeout": 30,
+        "storage_janitor_enabled": False,
+        "storage_janitor_check_interval": 3600,
     }
     defaults.update(overrides)
     settings = MagicMock()
@@ -176,7 +178,7 @@ class TestTick:
         manager._process_tracker.check_processes.return_value = []
         manager._scheduler = MagicMock()
         manager._scheduler.get_ready_apps.return_value = []
-        manager._retention_cleaner = MagicMock()
+        manager._log_retention_cleaner = MagicMock()
 
         manager._last_command_poll = time.monotonic() + 9999
         manager._last_process_check = time.monotonic() + 9999
@@ -184,7 +186,7 @@ class TestTick:
 
         manager._tick()
 
-        manager._retention_cleaner.run_cleanup.assert_called_once()
+        manager._log_retention_cleaner.run_cleanup.assert_called_once()
 
 
 class TestExecuteCommand:

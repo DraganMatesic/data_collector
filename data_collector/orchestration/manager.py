@@ -27,12 +27,14 @@ from data_collector.notifications.dispatcher import NotificationDispatcher
 from data_collector.notifications.models import Notification
 from data_collector.orchestration.command_handler import CommandHandler, PendingCommand
 from data_collector.orchestration.process_tracker import ProcessTracker, TrackedProcess
-from data_collector.orchestration.retention import RetentionCleaner
+from data_collector.orchestration.retention import LogRetentionCleaner
 from data_collector.orchestration.scheduler import Scheduler
 from data_collector.settings.dramatiq import TaskDispatcherSettings
 from data_collector.settings.manager import ManagerSettings
 from data_collector.settings.rabbitmq import RabbitMQSettings
+from data_collector.settings.storage import StorageSettings
 from data_collector.settings.watchservice import WatchServiceSettings
+from data_collector.storage.janitor import StorageJanitor
 from data_collector.tables.apps import Apps
 from data_collector.utilities.app_registration import ensure_service_app
 from data_collector.utilities.app_status import update_app_status
@@ -43,7 +45,7 @@ class Manager:
     """Central orchestrator that schedules and controls app processes.
 
     Composes :class:`Scheduler`, :class:`ProcessTracker`,
-    :class:`CommandHandler`, and :class:`RetentionCleaner` into a single
+    :class:`CommandHandler`, and :class:`LogRetentionCleaner` into a single
     main loop that runs until a stop signal is received.
 
     Args:
@@ -91,8 +93,11 @@ class Manager:
             rabbitmq_connection=rabbitmq_connection,
             rabbitmq_settings=rabbitmq_settings,
         )
-        self._retention_cleaner = RetentionCleaner(
+        self._log_retention_cleaner = LogRetentionCleaner(
             database, settings, logger=logger,
+        )
+        self._storage_janitor = StorageJanitor(
+            database, settings, StorageSettings(), logger=logger,
         )
 
         # Pipeline services (auto-detected from DB state)
@@ -115,6 +120,7 @@ class Manager:
         self._last_command_poll: float = 0.0
         self._last_process_check: float = 0.0
         self._last_retention_run: float = 0.0
+        self._last_storage_janitor_run: float = 0.0
 
     def run(self) -> None:
         """Start the main loop. Blocks until :meth:`stop` is called."""
@@ -144,7 +150,7 @@ class Manager:
                     self._tick()
                 except Exception:
                     self._exception_count += 1
-                    self._logger.exception("Manager tick failed (except_cnt=%d)", self._exception_count)
+                    self._logger.exception(f"Manager tick failed (except_cnt={self._exception_count})")
                 self._stop_event.wait(timeout=self._settings.polling_interval)
         finally:
             self._shutdown()
@@ -184,6 +190,14 @@ class Manager:
             self._run_retention()
             self._last_retention_run = now
 
+        # 5. Storage janitor (on storage_janitor_check_interval)
+        if (
+            self._settings.storage_janitor_enabled
+            and now - self._last_storage_janitor_run >= self._settings.storage_janitor_check_interval
+        ):
+            self._run_storage_janitor()
+            self._last_storage_janitor_run = now
+
     def _process_commands(self) -> None:
         """Poll DB for commands, drain queue, execute each."""
         self._command_handler.poll_database_commands()
@@ -220,13 +234,13 @@ class Manager:
         if command.command == CmdName.DISABLE:
             return self._cmd_disable(app_id)
 
-        self._logger.warning("Unknown command %s for app %s", command.command, app_id)
+        self._logger.warning(f"Unknown command {command.command} for app {app_id}")
         return False
 
     def _cmd_start(self, app_id: str, *, app_args: dict[str, Any] | None = None) -> bool:
         """Start an app if it is not already running and not disabled."""
         if self._process_tracker.is_tracked(app_id):
-            self._logger.warning("START: app %s is already running", app_id)
+            self._logger.warning(f"START: app {app_id} is already running")
             return False
 
         app = self._get_app(app_id)
@@ -234,7 +248,7 @@ class Manager:
             return False
 
         if bool(app.disable):
-            self._logger.warning("START: app %s is disabled", app_id)
+            self._logger.warning(f"START: app {app_id} is disabled")
             return False
 
         return self._spawn_app(app, app_args=app_args)
@@ -242,7 +256,7 @@ class Manager:
     def _cmd_stop(self, app_id: str) -> bool:
         """Stop a running app."""
         if not self._process_tracker.is_tracked(app_id):
-            self._logger.warning("STOP: app %s is not running", app_id)
+            self._logger.warning(f"STOP: app {app_id} is not running")
             return False
 
         return self._process_tracker.terminate_process(
@@ -258,7 +272,7 @@ class Manager:
             fatal_msg="",
         )
         self._failure_counts.pop(app_id, None)
-        self._logger.info("ENABLE: app %s re-enabled", app_id)
+        self._logger.info(f"ENABLE: app {app_id} re-enabled")
         return True
 
     def _cmd_disable(self, app_id: str) -> bool:
@@ -270,7 +284,7 @@ class Manager:
                 app_id, exit_code=RuntimeExitCode.CMD_DISABLE,
             )
 
-        self._logger.info("DISABLE: app %s disabled", app_id)
+        self._logger.info(f"DISABLE: app {app_id} disabled")
         return True
 
     def _check_processes(self) -> None:
@@ -386,14 +400,21 @@ class Manager:
             try:
                 self._notification_dispatcher.send(notification)
             except Exception:
-                self._logger.exception("Failed to send fatal notification for %s", app_id)
+                self._logger.exception(f"Failed to send fatal notification for {app_id}")
 
     def _run_retention(self) -> None:
-        """Run periodic retention cleanup."""
+        """Run periodic log retention cleanup."""
         try:
-            self._retention_cleaner.run_cleanup()
+            self._log_retention_cleaner.run_cleanup()
         except Exception:
-            self._logger.exception("Retention cleanup failed")
+            self._logger.exception("Log retention cleanup failed")
+
+    def _run_storage_janitor(self) -> None:
+        """Run periodic storage maintenance (file retention + disk monitoring)."""
+        try:
+            self._storage_janitor.run_maintenance()
+        except Exception:
+            self._logger.exception("Storage janitor failed")
 
     def _get_app(self, app_id: str) -> Apps | None:
         """Fetch a fresh Apps record from the database."""
@@ -460,7 +481,7 @@ class Manager:
         )
         self._watch_service.start()
         if roots:
-            self._logger.info("WatchService started with %d root(s)", len(roots))
+            self._logger.info(f"WatchService started with {len(roots)} root(s)")
         else:
             self._logger.info("WatchService started, waiting for roots to be registered")
 

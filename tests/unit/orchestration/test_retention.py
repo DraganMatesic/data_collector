@@ -1,10 +1,10 @@
-"""Unit tests for the RetentionCleaner class."""
+"""Unit tests for the LogRetentionCleaner class."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from data_collector.orchestration.retention import RetentionCleaner
+from data_collector.orchestration.retention import LogRetentionCleaner
 
 _MODULE = "data_collector.orchestration.retention"
 
@@ -27,7 +27,7 @@ def _make_settings(
 
 
 class TestRunCleanup:
-    """Test RetentionCleaner.run_cleanup()."""
+    """Test LogRetentionCleaner.run_cleanup()."""
 
     def test_deletes_from_all_tables(self) -> None:
         mock_database = MagicMock()
@@ -37,7 +37,7 @@ class TestRunCleanup:
         mock_session.execute.return_value.rowcount = 0
 
         settings = _make_settings()
-        cleaner = RetentionCleaner(mock_database, settings, logger=MagicMock())
+        cleaner = LogRetentionCleaner(mock_database, settings, logger=MagicMock())
 
         cleaner.run_cleanup()
 
@@ -54,15 +54,16 @@ class TestRunCleanup:
 
         mock_logger = MagicMock()
         settings = _make_settings()
-        cleaner = RetentionCleaner(mock_database, settings, logger=mock_logger)
+        cleaner = LogRetentionCleaner(mock_database, settings, logger=mock_logger)
 
         cleaner.run_cleanup()
 
         # Should log for each table that had rows deleted
         assert mock_logger.info.call_count == 5
         # Verify one of the log messages includes table name and row count
-        log_args = mock_logger.info.call_args_list[0]
-        assert 42 in log_args[0]
+        log_message = mock_logger.info.call_args_list[0][0][0]
+        assert "42" in log_message
+        assert "function_log_error" in log_message
 
     def test_no_logging_when_zero_rows(self) -> None:
         mock_database = MagicMock()
@@ -73,7 +74,7 @@ class TestRunCleanup:
 
         mock_logger = MagicMock()
         settings = _make_settings()
-        cleaner = RetentionCleaner(mock_database, settings, logger=mock_logger)
+        cleaner = LogRetentionCleaner(mock_database, settings, logger=mock_logger)
 
         cleaner.run_cleanup()
 
@@ -94,7 +95,7 @@ class TestRunCleanup:
             retention_runtime_days=90,
             retention_command_log_days=120,
         )
-        cleaner = RetentionCleaner(mock_database, settings, logger=MagicMock())
+        cleaner = LogRetentionCleaner(mock_database, settings, logger=MagicMock())
         cleaner.run_cleanup()
 
         # delete() should be called for each of the 5 tables
@@ -104,7 +105,7 @@ class TestRunCleanup:
 class TestPurgeRemovedApps:
     """Test that run_cleanup() calls _purge_removed_apps based on settings."""
 
-    @patch.object(RetentionCleaner, "_purge_removed_apps")
+    @patch.object(LogRetentionCleaner, "_purge_removed_apps")
     def test_purge_runs_when_enabled(self, mock_purge: MagicMock) -> None:
         mock_database = MagicMock()
         mock_session = MagicMock()
@@ -113,13 +114,13 @@ class TestPurgeRemovedApps:
         mock_session.execute.return_value.rowcount = 0
 
         settings = _make_settings(retention_app_purge_enabled=True)
-        cleaner = RetentionCleaner(mock_database, settings, logger=MagicMock())
+        cleaner = LogRetentionCleaner(mock_database, settings, logger=MagicMock())
 
         cleaner.run_cleanup()
 
         mock_purge.assert_called_once()
 
-    @patch.object(RetentionCleaner, "_purge_removed_apps")
+    @patch.object(LogRetentionCleaner, "_purge_removed_apps")
     def test_purge_skipped_when_disabled(self, mock_purge: MagicMock) -> None:
         mock_database = MagicMock()
         mock_session = MagicMock()
@@ -128,7 +129,7 @@ class TestPurgeRemovedApps:
         mock_session.execute.return_value.rowcount = 0
 
         settings = _make_settings(retention_app_purge_enabled=False)
-        cleaner = RetentionCleaner(mock_database, settings, logger=MagicMock())
+        cleaner = LogRetentionCleaner(mock_database, settings, logger=MagicMock())
 
         cleaner.run_cleanup()
 

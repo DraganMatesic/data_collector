@@ -151,8 +151,8 @@ class ProcessTracker:
             session.commit()
 
         self._logger.info(
-            "Spawned %s/%s/%s (PID %d, runtime %s)",
-            app.group_name, app.parent_name, app.app_name, process.pid, runtime_id,
+            f"Spawned {app.group_name}/{app.parent_name}/{app.app_name} "
+            f"(PID {process.pid}, runtime {runtime_id})",
         )
         return tracked
 
@@ -219,9 +219,8 @@ class ProcessTracker:
         self._finalize_process(tracked, return_code, exit_code_override=exit_code.value)
 
         self._logger.info(
-            "Terminated %s/%s/%s (PID %d, exit_code=%s)",
-            tracked.group_name, tracked.parent_name, tracked.app_name,
-            tracked.process.pid, exit_code.name,
+            f"Terminated {tracked.group_name}/{tracked.parent_name}/{tracked.app_name} "
+            f"(PID {tracked.process.pid}, exit_code={exit_code.name})",
         )
         return True
 
@@ -266,9 +265,7 @@ class ProcessTracker:
             try:
                 pid = int(pid_str.strip())
             except ValueError:
-                self._logger.warning(
-                    "Invalid PID value '%s' for app %s, clearing", pid_str, app_id,
-                )
+                self._logger.warning(f"Invalid PID value '{pid_str}' for app {app_id}, clearing")
                 self._clear_orphan_state(app_id)
                 continue
 
@@ -277,13 +274,15 @@ class ProcessTracker:
 
             if self.is_pid_alive(pid):
                 self._logger.warning(
-                    "Orphan process PID %d found for %s/%s/%s, terminating",
-                    pid, app.group_name, app.parent_name, app.app_name,
+                    f"Orphan process PID {pid} found for "
+                    f"{app.group_name}/{app.parent_name}/{app.app_name}, terminating",
                 )
                 self.kill_pid(pid)
 
             self._clear_orphan_state(app_id)
-            self._logger.info("Cleared orphan state for %s/%s/%s", app.group_name, app.parent_name, app.app_name)
+            self._logger.info(
+                f"Cleared orphan state for {app.group_name}/{app.parent_name}/{app.app_name}",
+            )
 
     def _clear_orphan_state(self, app_id: str) -> None:
         """Reset run_status and explicitly NULL app_pids for an orphan app.

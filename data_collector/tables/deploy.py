@@ -18,6 +18,7 @@ from data_collector.enums import (
     CmdFlag,
     CmdName,
     FatalFlag,
+    FileRetention,
     LogLevel,
     PipelineStage,
     PipelineStatus,
@@ -38,6 +39,7 @@ from data_collector.tables.notifications import CodebookAlertSeverity
 from data_collector.tables.pipeline import CodebookPipelineStage, CodebookPipelineStatus
 from data_collector.tables.runtime import CodebookRuntimeCodes
 from data_collector.tables.shared import Base
+from data_collector.tables.storage import CodebookFileRetention
 from data_collector.utilities.database.main import Database
 from data_collector.utilities.functions.runtime import bulk_hash
 
@@ -245,6 +247,55 @@ class Deploy:
                 CodebookPipelineStage(id=PipelineStage.LOAD.value, description="Load stage"),
             ]
             seed_data.append(SeedData(data=pipeline_stage, data_label="pipeline_stage"))
+
+            file_retention = [
+                CodebookFileRetention(
+                    id=FileRetention.TRANSIENT.value,
+                    description="Temporary files, caches, intermediate processing outputs",
+                    retention_days=7,
+                ),
+                CodebookFileRetention(
+                    id=FileRetention.SHORT_TERM.value,
+                    description="Operational data, session files, monitoring snapshots",
+                    retention_days=90,
+                ),
+                CodebookFileRetention(
+                    id=FileRetention.STANDARD.value,
+                    description="General business records, routine correspondence",
+                    retention_days=365,
+                ),
+                CodebookFileRetention(
+                    id=FileRetention.REGULATORY_3Y.value,
+                    description="Employment records, customer complaints, warranty documentation",
+                    retention_days=1095,
+                ),
+                CodebookFileRetention(
+                    id=FileRetention.REGULATORY_5Y.value,
+                    description="Accounting records, financial statements, contractual documents",
+                    retention_days=1825,
+                ),
+                CodebookFileRetention(
+                    id=FileRetention.REGULATORY_7Y.value,
+                    description="Tax and audit records, securities compliance, AML records",
+                    retention_days=2555,
+                ),
+                CodebookFileRetention(
+                    id=FileRetention.REGULATORY_10Y.value,
+                    description="Banking records, insurance documents, healthcare records",
+                    retention_days=3650,
+                ),
+                CodebookFileRetention(
+                    id=FileRetention.EXTENDED.value,
+                    description="Legal holds, product liability, engineering records",
+                    retention_days=9125,
+                ),
+                CodebookFileRetention(
+                    id=FileRetention.PERMANENT.value,
+                    description="Permanent storage, never deleted by retention enforcement",
+                    retention_days=None,
+                ),
+            ]
+            seed_data.append(SeedData(data=file_retention, data_label="file_retention"))
 
             for seed in seed_data:
                 try:

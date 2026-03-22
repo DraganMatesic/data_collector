@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from data_collector.settings.main import GeneralSettings, MainDatabaseSettings
+from data_collector.settings.storage import StorageSettings
 
 # Always load general settings
 general_settings = GeneralSettings()
@@ -10,7 +11,7 @@ general_settings = GeneralSettings()
 # Optional country-specific settings
 EXAMPLE_SETTINGS: object | None = None
 
-__all__ = ["EXAMPLE_SETTINGS", "MainDatabaseSettings", "general_settings"]
+__all__ = ["EXAMPLE_SETTINGS", "MainDatabaseSettings", "StorageSettings", "general_settings"]
 
 # Dynamically import country configs if present
 # try:

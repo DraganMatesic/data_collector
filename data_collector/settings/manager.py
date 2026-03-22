@@ -25,6 +25,8 @@ class ManagerSettings(BaseSettings):
         DC_MANAGER_RETENTION_FUNCTION_LOG_DAYS -- Days to keep function_log records.
         DC_MANAGER_RETENTION_COMMAND_LOG_DAYS -- Days to keep command_log records.
         DC_MANAGER_RETENTION_APP_PURGE_ENABLED -- Enable automatic purge of removed apps.
+        DC_MANAGER_STORAGE_JANITOR_ENABLED     -- Enable periodic storage maintenance.
+        DC_MANAGER_STORAGE_JANITOR_CHECK_INTERVAL -- Seconds between storage maintenance runs.
 
     Examples:
         From environment variables::
@@ -65,3 +67,7 @@ class ManagerSettings(BaseSettings):
     retention_function_log_days: int = 90
     retention_command_log_days: int = 365
     retention_app_purge_enabled: bool = True
+
+    # -- Storage janitor --
+    storage_janitor_enabled: bool = True
+    storage_janitor_check_interval: int = 3600

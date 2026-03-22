@@ -1,8 +1,12 @@
 """Periodic cleanup of old log, runtime, and audit records.
 
-The Manager calls :meth:`RetentionCleaner.run_cleanup` on a configurable
-interval to prevent unbounded growth of historical tables. When app purge
-is enabled, also deletes apps that have passed their scheduled removal date.
+The Manager calls :meth:`LogRetentionCleaner.run_cleanup` on a configurable
+interval to prevent unbounded growth of operational log tables.  When app
+purge is enabled, also deletes apps that have passed their scheduled removal
+date.
+
+This handles **log table hygiene** (function_log, logs, runtime, command_log).
+File storage retention is handled separately by ``StorageJanitor``.
 """
 
 from __future__ import annotations
@@ -22,8 +26,12 @@ from data_collector.tables.runtime import Runtime
 from data_collector.utilities.database.main import Database
 
 
-class RetentionCleaner:
-    """Delete records older than configured retention thresholds.
+class LogRetentionCleaner:
+    """Delete log and runtime records older than configured retention thresholds.
+
+    Handles operational table hygiene: function_log, function_log_error,
+    logs, runtime, command_log, and app directory purge.  File storage
+    retention is a separate concern handled by ``StorageJanitor``.
 
     Args:
         database: Database instance connected to the main schema.
@@ -104,7 +112,7 @@ class RetentionCleaner:
             session.commit()
 
         if deleted_count > 0:
-            self._logger.info("Retention: deleted %d rows from %s", deleted_count, table_name)
+            self._logger.info(f"Retention: deleted {deleted_count} rows from {table_name}")
 
     def _purge_removed_apps(self, now: datetime) -> None:
         """Delete apps whose ``removal_date`` has passed.
@@ -204,4 +212,4 @@ class RetentionCleaner:
 
             session.commit()
 
-        self._logger.info("Retention: purged %d expired app(s)", len(expired_apps))
+        self._logger.info(f"Retention: purged {len(expired_apps)} expired app(s)")
