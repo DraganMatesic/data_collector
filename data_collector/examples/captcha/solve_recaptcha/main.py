@@ -36,7 +36,7 @@ from data_collector.settings.captcha import CaptchaSettings
 from data_collector.settings.main import LogSettings
 from data_collector.tables.apps import AppGroups, AppParents, Apps
 from data_collector.tables.captcha import CaptchaLog, CaptchaLogError
-from data_collector.tables.deploy import Deploy
+from data_collector.tables.deploy import ExampleDeploy
 from data_collector.tables.runtime import Runtime
 from data_collector.utilities.database.main import Database
 from data_collector.utilities.fun_watch import FunWatchMixin, FunWatchRegistry, fun_watch
@@ -183,7 +183,6 @@ def _register_app(database: Database, app_info: AppInfo) -> None:
                 run_status=RunStatus.NOT_RUNNING,
                 fatal_flag=FatalFlag.NONE,
                 disable=True,
-                managed=False,
             ),
             session,
             filter_cols=["group_name", "parent_name", "app_name"],
@@ -224,9 +223,10 @@ def main() -> None:
 
     FunWatchRegistry.reset()
 
-    deploy = Deploy()
+    deploy = ExampleDeploy()
     deploy.create_tables()
     deploy.populate_tables()
+    FunWatchRegistry.instance().set_system_db(deploy.database)
 
     database = deploy.database
     app_info: AppInfo = get_app_info(__file__)  # type: ignore[assignment]

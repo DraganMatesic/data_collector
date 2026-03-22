@@ -230,6 +230,18 @@ class FunWatchRegistry:
         with cls._instance_lock:
             cls._instance = None
 
+    def set_system_db(self, database: Database) -> None:
+        """Override the lazily-created system database with an externally managed instance.
+
+        Used by example apps to redirect system table writes (AppFunctions, FunctionLog)
+        to an isolated schema via ``schema_translate_map``.
+
+        Args:
+            database: A Database instance (typically with schema_translate_map applied).
+        """
+        with self._db_lock:
+            self._system_db = database
+
     def _get_system_db(self) -> Database:
         """Return a lazily-created Database for system table writes."""
         if self._system_db is None:

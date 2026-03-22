@@ -468,3 +468,48 @@ class Deploy:
         except http_requests.RequestException as exc:
             self.logger.error("Failed to create Splunk sourcetype '%s': %s", sourcetype, exc)
             return False
+
+
+EXAMPLE_SCHEMA = "dc_example"
+
+
+class ExampleDeploy(Deploy):
+    """Deploy variant that isolates all tables into the ``dc_example`` schema.
+
+    Uses SQLAlchemy ``schema_translate_map`` to redirect framework tables (schema=None)
+    and example data tables (schema="scraping") into ``dc_example`` without modifying ORM
+    model definitions. Production ``Deploy`` remains untouched.
+    """
+
+    def __init__(self) -> None:
+        self.database = Database(
+            MainDatabaseSettings(),
+            schema_translate_map={None: EXAMPLE_SCHEMA, "scraping": EXAMPLE_SCHEMA},
+        )
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+
+    def create_tables(
+        self,
+        tables: Sequence[Table] | None = None,
+        schema: str | None = None,
+    ) -> None:
+        """Create tables in the dc_example schema.
+
+        Args:
+            tables: Specific tables to create. None = all Base metadata tables.
+            schema: Ignored. The dc_example schema is always used.
+        """
+        self.database.ensure_schema(EXAMPLE_SCHEMA)
+        Base.metadata.create_all(self.database.engine, tables=tables)
+
+    def drop_tables(
+        self,
+        tables: Sequence[Table] | None = None,
+    ) -> None:
+        """Drop tables from the dc_example schema.
+
+        Args:
+            tables: Specific tables to drop. None = all Base metadata tables.
+        """
+        Base.metadata.drop_all(self.database.engine, tables=tables)

@@ -17,7 +17,7 @@ import sys
 from sqlalchemy import Table
 
 from data_collector.examples.scraping import SCHEMA
-from data_collector.tables.deploy import Deploy
+from data_collector.tables.deploy import ExampleDeploy
 from data_collector.tables.shared import Base
 
 _EXAMPLES_DIR = pathlib.Path(__file__).parent
@@ -48,7 +48,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    deploy = Deploy()
+    deploy = ExampleDeploy()
 
     if args.command == "create":
         deploy.create_tables(tables=_EXAMPLE_TABLES, schema=SCHEMA)

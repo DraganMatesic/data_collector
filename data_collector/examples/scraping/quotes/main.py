@@ -27,13 +27,12 @@ from typing import Any
 from sqlalchemy import select
 
 from data_collector.enums import FatalFlag, RunStatus
-from data_collector.examples.scraping import SCHEMA
 from data_collector.examples.scraping.quotes.parser import Parser
 from data_collector.scraping import DEFAULT_CATEGORY_THRESHOLDS, ThreadedScraper
 from data_collector.scraping.base import update_app_status
 from data_collector.settings.main import LogSettings
 from data_collector.tables.apps import AppGroups, AppParents, Apps
-from data_collector.tables.deploy import Deploy
+from data_collector.tables.deploy import ExampleDeploy
 from data_collector.tables.runtime import Runtime
 from data_collector.utilities.database.main import Database
 from data_collector.utilities.fun_watch import FunWatchRegistry, fun_watch
@@ -132,7 +131,6 @@ def _register_app(database: Database, app_info: AppInfo) -> None:
                 run_status=RunStatus.NOT_RUNNING,
                 fatal_flag=FatalFlag.NONE,
                 disable=True,
-                managed=False,
             ),
             session,
             filter_cols=["group_name", "parent_name", "app_name"],
@@ -173,11 +171,11 @@ def main() -> None:
 
     FunWatchRegistry.reset()
 
-    # Ensure app schema exists, then deploy all tables (non-destructive) + codebook seed data
-    deploy = Deploy()
-    deploy.database.ensure_schema(SCHEMA)
+    # Deploy all tables into dc_example schema (non-destructive) + codebook seed data
+    deploy = ExampleDeploy()
     deploy.create_tables()
     deploy.populate_tables()
+    FunWatchRegistry.instance().set_system_db(deploy.database)
 
     database = deploy.database
     app_info: AppInfo = get_app_info(__file__)  # type: ignore[assignment]
