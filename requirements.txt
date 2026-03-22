@@ -20,3 +20,9 @@ croniter>=1.4.1
 dramatiq[rabbitmq]>=2.1.0
 watchdog>=6.0.0
 pywin32>=310; sys_platform == "win32"
+pdfplumber>=0.11.0
+pytesseract>=0.3.13
+Pillow>=11.0.0
+opencv-python-headless>=4.10.0
+paddleocr>=3.0.0
+paddlepaddle>=3.0.0

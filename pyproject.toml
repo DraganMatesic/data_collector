@@ -34,6 +34,9 @@ dev = [
     "zeep>=4.2.0",
     "lxml-stubs>=0.5.1"
 ]
+gpu = [
+    "paddlepaddle-gpu>=3.0.0"
+]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
