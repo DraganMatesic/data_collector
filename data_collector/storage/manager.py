@@ -229,12 +229,16 @@ class StorageManager:
             # (app_id, content_hash, location) prevents duplicates.
             # Roll back only the savepoint, not the caller's pending writes.
             savepoint.rollback()
-            # Clean up the orphaned file we wrote before the failed insert
-            self._backend.delete(relative_path)
-            # Resolve the winning row's path
+            # Resolve the winning row to get its actual path
             winning_row = self._find_duplicate(content_hash, session)
             if winning_row is not None:
                 winning_path = self._backend.root / Path(str(winning_row.stored_path))
+                # Delete our file only if it differs from the winner's path
+                # (e.g., different extension produced a different relative_path).
+                # If paths match, both writers wrote identical bytes to the same
+                # file -- leave it in place for the winning row.
+                if absolute_path != winning_path:
+                    self._backend.delete(relative_path)
             else:
                 winning_path = absolute_path
             self._logger.debug(
@@ -369,8 +373,8 @@ class StorageManager:
             ).limit(1)
             target_row = self._database.query(existing_on_target, session).scalars().first()
 
-            if target_row is not None:
-                # Target row exists -- apply retention override if requested, then delete source
+            if target_row is not None and target_row is not stored_file:
+                # A separate target row exists -- apply retention override, then delete source
                 if retention_category is not None:
                     target_row.retention_category = target_retention  # type: ignore[assignment]
                     target_row.expiration_date = target_expiration  # type: ignore[assignment]
@@ -379,6 +383,15 @@ class StorageManager:
                 self._logger.info(
                     f"Moved: {source_relative_path} -> {target_backend.location_name} "
                     f"(source row deleted, target row updated)",
+                )
+            elif target_row is stored_file:
+                # stored_file is already on the target -- just apply retention if needed
+                if retention_category is not None:
+                    stored_file.retention_category = target_retention  # type: ignore[assignment]
+                    stored_file.expiration_date = target_expiration  # type: ignore[assignment]
+                    session.flush()
+                self._logger.debug(
+                    f"Move: {source_relative_path} already on {target_backend.location_name}",
                 )
             else:
                 # No target row -- update the source row to point to the target
@@ -414,10 +427,20 @@ class StorageManager:
                     retention_category=target_retention,
                     expiration_date=target_expiration,
                 )
-                self._database.add(copy_record, session)
-                self._logger.info(
-                    f"Copied: {source_relative_path} -> {target_backend.location_name}",
-                )
+                copy_savepoint = session.begin_nested()
+                try:
+                    self._database.add(copy_record, session)
+                    session.flush()
+                except IntegrityError:
+                    copy_savepoint.rollback()
+                    self._logger.debug(
+                        f"Copy already exists on {target_backend.location_name}: "
+                        f"{source_relative_path} (concurrent insert)",
+                    )
+                else:
+                    self._logger.info(
+                        f"Copied: {source_relative_path} -> {target_backend.location_name}",
+                    )
 
         return target_absolute_path
 
