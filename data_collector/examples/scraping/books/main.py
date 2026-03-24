@@ -70,6 +70,7 @@ class Books(BaseScraper):
     def collect(self) -> None:
         """Fetch each catalogue page and parse book listings."""
         self._start_collect_timer()
+        self._fun_watch.set_task_size(self.list_size)
         for url in self.work_list:
             if self.should_abort:
                 break

@@ -265,7 +265,7 @@ class RequestMetrics:
                 "by_proxy": by_proxy,
             }
 
-        logger.info("Request statistics: %s", stats)
+        logger.info("Request statistics", extra={"request_stats": stats})
         return stats
 
     @staticmethod
@@ -835,7 +835,7 @@ class Request:
             "error_rate_percent": round(error_rate, 2),
             "error_breakdown": error_breakdown,
         }
-        logger.info("Request statistics: %s", stats)
+        logger.info("Request statistics", extra={"request_stats": stats})
         return stats
 
     def _auto_save_response(self, url: str) -> None:

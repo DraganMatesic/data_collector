@@ -91,6 +91,7 @@ class AbortHttp(BaseScraper):
     def collect(self) -> None:
         """Fetch each URL, detecting non-2xx as HTTP errors."""
         self._start_collect_timer()
+        self._fun_watch.set_task_size(self.list_size)
         for url in self.work_list:
             if self.should_abort:
                 print("\n  ABORT: should_abort=True, stopping collection loop")
@@ -101,13 +102,21 @@ class AbortHttp(BaseScraper):
             response = self.request.get(url)
             if response is None:
                 print(f"  FAILED (connection): {url}")
-                self.increment_failed(error_category=self.request.get_error_category())
+                self.increment_failed(
+                    error_category=self.request.get_error_category(),
+                    error_type="ConnectionError",
+                    error_message=f"{url}: connection failed",
+                )
                 self.update_progress()
                 continue
 
             if response.status_code < 200 or response.status_code >= 300:
                 print(f"  FAILED (HTTP {response.status_code}): {url}")
-                self.increment_failed(error_category=ErrorCategory.HTTP)
+                self.increment_failed(
+                    error_category=ErrorCategory.HTTP,
+                    error_type=f"HTTP_{response.status_code}",
+                    error_message=f"{url}: HTTP {response.status_code}",
+                )
                 self.update_progress()
                 continue
 
