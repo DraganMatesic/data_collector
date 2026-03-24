@@ -37,8 +37,12 @@ class Logs(Base):
     module_name = Column(String(length=256), doc="Module name (.py) from where logging is coming")
     module_path = Column(UnicodeText, doc="Module path from where logging is coming.")
     function_name = Column(String(length=256), doc="Function name from where logging is coming")
-    function_id = Column(String(length=64), index=True,
-                         doc="It is hashed value of app_id, module_name and function_name ")
+    function_id = Column(
+        String(length=64),
+        ForeignKey(AppFunctions.function_hash, ondelete="CASCADE"),
+        index=True,
+        doc="SHA3-256 hash of app_id + function_name, references app_functions.function_hash",
+    )
 
 
     call_chain = Column(UnicodeText, doc="Contains call chain from root caller to actual logging caller")

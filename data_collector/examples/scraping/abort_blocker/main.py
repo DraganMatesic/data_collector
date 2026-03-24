@@ -98,7 +98,11 @@ class AbortBlocker(ThreadedScraper):
         response = request.get(item)
         if response is None:
             print(f"  FAILED [{instance_id}]: {item}")
-            self.increment_failed(error_category=request.get_error_category())
+            self.increment_failed(
+                error_category=request.get_error_category(),
+                error_type="ConnectionError",
+                error_message=f"{item}: connection failed",
+            )
             return
 
         books = self.parser.parse_catalogue(response.content)
@@ -112,7 +116,11 @@ class AbortBlocker(ThreadedScraper):
 
         if should_simulate:
             print(f"  SIMULATING DATABASE ERROR [{instance_id}]: {item}")
-            self.increment_failed(error_category=ErrorCategory.DATABASE)
+            self.increment_failed(
+                error_category=ErrorCategory.DATABASE,
+                error_type="DatabaseError",
+                error_message=f"{item}: simulated database write failure",
+            )
             return
 
         if books:

@@ -316,7 +316,10 @@ class FunWatchRegistry:
         def wrapped(*args: Any, **kwargs: Any) -> T:
             token = self.bind_context(parent_context)
             structlog.contextvars.bind_contextvars(**parent_structlog_context)
-            structlog.contextvars.bind_contextvars(thread_id=threading.get_ident())
+            parent_chain = parent_structlog_context.get("call_chain", "")
+            worker_name = getattr(func, "__qualname__", None) or getattr(func, "__name__", "worker")
+            extended_chain = f"{parent_chain} -> {worker_name}" if parent_chain else worker_name
+            structlog.contextvars.bind_contextvars(thread_id=threading.get_ident(), call_chain=extended_chain)
             try:
                 return func(*args, **kwargs)
             finally:
@@ -358,6 +361,12 @@ class FunWatchRegistry:
             db = self._get_system_db()
             try:
                 with db.create_session() as session:
+                    sha = str(make_hash({
+                        "function_hash": function_hash,
+                        "function_name": function_name,
+                        "filepath": filepath,
+                        "app_id": app_id,
+                    }))
                     record = AppFunctions(
                         function_hash=function_hash,
                         function_name=function_name,
@@ -365,6 +374,7 @@ class FunWatchRegistry:
                         app_id=app_id,
                         first_seen=now,
                         last_seen=now,
+                        sha=sha,
                     )
                     db.update_insert(
                         record,
@@ -463,10 +473,28 @@ class FunWatchRegistry:
                     if task_size is not None:
                         record.task_size = task_size  # type: ignore[assignment]
                     if error_type is not None or item_error_count > 0:
+                        # When no Python exception was caught but item-level errors
+                        # were tracked via mark_failed(), derive the top-level
+                        # error_type and error_message from the dominant error type.
+                        effective_error_type = error_type
+                        effective_error_message = error_message
+                        if effective_error_type is None and item_error_types_json:
+                            try:
+                                error_types: dict[str, int] = json.loads(item_error_types_json)
+                                if error_types:
+                                    dominant_type = max(error_types, key=lambda key: error_types[key])
+                                    effective_error_type = dominant_type
+                                    if effective_error_message is None and item_error_samples_json:
+                                        samples: dict[str, list[str]] = json.loads(item_error_samples_json)
+                                        dominant_samples = samples.get(dominant_type, [])
+                                        if dominant_samples:
+                                            effective_error_message = dominant_samples[0]
+                            except (json.JSONDecodeError, TypeError, KeyError):
+                                pass
                         error_record = FunctionLogError(
                             function_log_id=log_id,
-                            error_type=error_type,
-                            error_message=error_message,
+                            error_type=effective_error_type,
+                            error_message=effective_error_message,
                             item_error_count=item_error_count,
                             item_error_types_json=item_error_types_json,
                             item_error_samples_json=item_error_samples_json,

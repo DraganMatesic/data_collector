@@ -83,6 +83,67 @@ class _RawQueueHandler(QueueHandler):
         return record
 
 
+class _StructlogContextFilter(logging.Filter):
+    """Bridge structlog contextvars to stdlib LogRecords.
+
+    Reads the current structlog contextvar store and injects any bound
+    values onto the LogRecord's ``__dict__``.  This allows library modules
+    using ``logging.getLogger(__name__)`` to automatically carry the same
+    context as structlog-native loggers when called from within
+    ``@fun_watch``-decorated code.
+
+    Only sets attributes that are not already present on the record,
+    preserving any values set by the emitting code.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Inject structlog context variables onto the log record."""
+        context = structlog.contextvars.get_contextvars()
+        for key, value in context.items():
+            if getattr(record, key, None) is None:
+                setattr(record, key, value)
+        return True
+
+
+class _RequiredContextFilter(logging.Filter):
+    """Block log records missing required tracing context from persistence sinks.
+
+    Only fully-traceable records reach ``DatabaseHandler`` and ``SplunkHECHandler``.
+    The required fields (``app_id``, ``runtime``, ``function_id``, ``call_chain``)
+    are exclusively provided by ``@fun_watch`` -- no manual binding path is
+    supported.  Records without these fields still reach console output for
+    development use.
+    """
+
+    REQUIRED_FIELDS: frozenset[str] = frozenset({
+        "app_id", "runtime", "function_id", "call_chain",
+    })
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return True only when all required context fields are present, non-None, and non-empty.
+
+        Checks three sources (in priority order):
+
+        1. LogRecord attributes -- set by ``_StructlogContextFilter`` for stdlib
+           loggers or by explicit ``setattr`` calls.
+        2. ``record.msg`` dict -- structlog-native loggers store their event dict
+           (including contextvars merged by ``merge_contextvars``) as the record
+           message before it reaches the QueueHandler.
+        3. Structlog contextvar store -- fallback for same-thread callers where
+           contextvars haven't been merged onto the record yet.
+        """
+        # For structlog records, record.msg is a dict with merged contextvars
+        message = record.msg
+        structlog_event: dict[str, object] = (
+            cast(dict[str, object], message) if isinstance(message, dict) else {}
+        )
+        context = structlog.contextvars.get_contextvars()
+        return all(
+            getattr(record, field, None) or structlog_event.get(field) or context.get(field)
+            for field in self.REQUIRED_FIELDS
+        )
+
+
 class LoggingService:
     """Configure logger + queue listener + sink routing in one place."""
 
@@ -132,7 +193,27 @@ class LoggingService:
         )
 
     def configure_logger(self) -> BoundLogger:
-        """Configure queue-driven logger and return a structlog BoundLogger."""
+        """Configure queue-driven logger and return a structlog BoundLogger.
+
+        Database and Splunk persistence requires full tracing context provided
+        exclusively by ``@fun_watch``.  The required fields (``app_id``,
+        ``runtime``, ``function_id``, ``call_chain``) are bound to structlog
+        contextvars by the framework's execution infrastructure:
+
+            - ``app_id`` and ``runtime``: bound at process startup by Manager
+              or Dramatiq worker bootstrap.
+            - ``function_id`` and ``call_chain``: bound per-invocation by
+              ``@fun_watch``.
+
+        Library modules using ``logging.getLogger(__name__)`` automatically
+        inherit this context when called from within ``@fun_watch``-decorated
+        code.  Their log records are persisted with full traceability.
+
+        Log messages emitted outside ``@fun_watch`` context appear on console
+        only and are not persisted to the Logs table or forwarded to Splunk.
+        This is by design -- untraceable records are not permitted in
+        persistence sinks.
+        """
         _StructlogConfigurator.instance().configure(self.settings)
 
         self.logger.setLevel(self.logger_level)
@@ -156,6 +237,23 @@ class LoggingService:
                     )
                 )
 
+        # Attach data quality gate to persistence sinks -- only records with
+        # full @fun_watch context (app_id, runtime, function_id, call_chain)
+        # are persisted.  Console output is unrestricted.
+        # Attach data quality gate to persistence sinks -- only records with
+        # full @fun_watch context (app_id, runtime, function_id, call_chain)
+        # are persisted.  Console output is unrestricted.
+        # The TypeError guard handles test mocking where SplunkHECHandler is
+        # replaced by MagicMock (not a valid type for isinstance).
+        required_context_filter = _RequiredContextFilter()
+        for sink in self.sinks:
+            try:
+                is_persistence_sink = isinstance(sink, (DatabaseHandler, SplunkHECHandler))
+            except TypeError:
+                is_persistence_sink = False
+            if is_persistence_sink:
+                sink.addFilter(required_context_filter)
+
         console = logging.StreamHandler()
         console.setLevel(self.logger_level)
         console.setFormatter(self._build_console_formatter())
@@ -177,6 +275,22 @@ class LoggingService:
             for handler in self.logger.handlers
         ):
             self.logger.addHandler(_RawQueueHandler(self.log_queue))
+
+        # Configure the "data_collector" parent logger so that all framework
+        # library modules using logging.getLogger(__name__) inherit handlers
+        # through Python's logger hierarchy propagation.  Without this, only
+        # the app-specific logger receives messages; library loggers like
+        # "data_collector.processing.pdf" have no handlers and their
+        # INFO/DEBUG messages are silently dropped.
+        framework_logger = logging.getLogger("data_collector")
+        if not any(
+            isinstance(handler, _RawQueueHandler) and getattr(handler, "queue", None) is self.log_queue
+            for handler in framework_logger.handlers
+        ):
+            framework_handler = _RawQueueHandler(self.log_queue)
+            framework_handler.addFilter(_StructlogContextFilter())
+            framework_logger.addHandler(framework_handler)
+            framework_logger.setLevel(min(framework_logger.level or logging.WARNING, self.logger_level))
 
         self.start()
         return cast(BoundLogger, structlog.get_logger(self.logger_name).bind())

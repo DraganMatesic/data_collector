@@ -42,6 +42,7 @@ from data_collector.tables.log import FunctionLog, FunctionLogError, Logs
 from data_collector.tables.runtime import Runtime
 from data_collector.utilities.database.main import Database
 from data_collector.utilities.fun_watch import FunWatchMixin, FunWatchRegistry, fun_watch
+from data_collector.utilities.functions.math import get_totalh, get_totalm, get_totals
 from data_collector.utilities.functions.runtime import AppInfo, get_app_info
 from data_collector.utilities.log.main import LoggingService
 
@@ -124,6 +125,22 @@ def _seed_parent_rows(db: Database, app_info: AppInfo, runtime_id: str) -> None:
             start_time=datetime.now(UTC),
         ))
         session.commit()
+
+
+def _complete_runtime(db: Database, runtime_id: str, start_time: datetime, exception_count: int = 0) -> None:
+    """Finalize Runtime row with end_time, duration, and exception count."""
+    end_time = datetime.now(UTC)
+    with db.create_session() as session:
+        record = db.query(
+            select(Runtime).where(Runtime.runtime == runtime_id), session,
+        ).scalar_one_or_none()
+        if record is not None:
+            record.end_time = end_time  # type: ignore[assignment]
+            record.totals = get_totals(start_time, end_time)  # type: ignore[assignment]
+            record.totalm = get_totalm(start_time, end_time)  # type: ignore[assignment]
+            record.totalh = get_totalh(start_time, end_time)  # type: ignore[assignment]
+            record.except_cnt = exception_count  # type: ignore[assignment]
+            session.commit()
 
 
 def _print_results(db: Database, app_id: str) -> None:
@@ -216,6 +233,7 @@ def main() -> None:
     FunWatchRegistry.instance().set_system_db(deploy.database)
 
     db = deploy.database
+    runtime_start = datetime.now(UTC)
     _seed_parent_rows(db, app_info, runtime_id)
 
     log_settings = LogSettings(log_level=10, log_error_file="error.log")
@@ -303,7 +321,8 @@ def main() -> None:
                             error=str(exc),
                         )
 
-            # Let QueueListener flush pending log records to DB
+            # Finalize Runtime row and let QueueListener flush
+            _complete_runtime(db, runtime_id, runtime_start, exception_count=2)
             time.sleep(0.5)
             _print_results(db, app_id)
 

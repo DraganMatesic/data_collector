@@ -40,6 +40,7 @@ from data_collector.tables.log import FunctionLog, Logs
 from data_collector.tables.runtime import Runtime
 from data_collector.utilities.database.main import Database
 from data_collector.utilities.fun_watch import FunWatchMixin, FunWatchRegistry, fun_watch
+from data_collector.utilities.functions.math import get_totalh, get_totalm, get_totals
 from data_collector.utilities.functions.runtime import AppInfo, get_app_id, get_app_info
 from data_collector.utilities.log.main import LoggingService
 
@@ -119,6 +120,22 @@ def _seed_parent_rows(db: Database, app_info: AppInfo, apps: list[tuple[str, str
         session.commit()
 
 
+def _complete_runtime(db: Database, runtime_id: str, start_time: datetime, exception_count: int = 0) -> None:
+    """Finalize Runtime row with end_time, duration, and exception count."""
+    end_time = datetime.now(UTC)
+    with db.create_session() as session:
+        record = db.query(
+            select(Runtime).where(Runtime.runtime == runtime_id), session,
+        ).scalar_one_or_none()
+        if record is not None:
+            record.end_time = end_time  # type: ignore[assignment]
+            record.totals = get_totals(start_time, end_time)  # type: ignore[assignment]
+            record.totalm = get_totalm(start_time, end_time)  # type: ignore[assignment]
+            record.totalh = get_totalh(start_time, end_time)  # type: ignore[assignment]
+            record.except_cnt = exception_count  # type: ignore[assignment]
+            session.commit()
+
+
 def _print_results(db: Database, app_ids: list[str]) -> None:
     """Query and print all rows inserted by this example."""
     with db.create_session() as session:
@@ -173,6 +190,7 @@ def main() -> None:
     FunWatchRegistry.instance().set_system_db(deploy.database)
 
     db = deploy.database
+    runtime_start = datetime.now(UTC)
     _seed_parent_rows(db, app_info, [
         (app_id_main, app_info["app_name"], runtime_main),
         (app_id_child, app_info["app_name"] + "_child", runtime_child),
@@ -216,7 +234,9 @@ def main() -> None:
             )
             child2.fetch_pages(["https://y.com"])
 
-            # Let QueueListener flush pending log records to DB
+            # Finalize Runtime rows and let QueueListener flush
+            _complete_runtime(db, runtime_main, runtime_start)
+            _complete_runtime(db, runtime_child, runtime_start)
             time.sleep(0.5)
             _print_results(db, app_ids)
 
