@@ -3,7 +3,7 @@
 Demonstrates:
     - Real LoggingService integration (Logs table inserts via DatabaseHandler)
     - Real AppFunctions registration rows (function_hash, function_name, filepath, app_id)
-    - Real FunctionLog rows (execution_order, task_size, solved, failed, timing)
+    - Real FunctionLog rows (call_count, task_size, solved, failed, timing metrics)
     - task_size auto-detection from first arg with __len__
     - task_size=None when first arg has no __len__ or no args at all
     - main_app defaults to app_id when self.main_app is not set
@@ -154,7 +154,7 @@ def _print_results(db: Database, app_ids: list[str]) -> None:
         ).scalars().all()
         for row in fl_rows:
             print(
-                f"  id={row.id} | log_role={row.log_role} | parent_log_id={row.parent_log_id}"
+                f"  id={row.id} | log_role={row.log_role} | call_count={row.call_count}"
                 f" | solved={row.solved} | failed={row.failed} | task_size={row.task_size}"
             )
         if not fl_rows:

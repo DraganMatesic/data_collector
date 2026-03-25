@@ -61,9 +61,9 @@ class DemoApp(FunWatchMixin):
     def process_records(self, records: list[str]) -> int:
         """Process a batch of records, marking each as solved.
 
-        Includes a 1.5-second sleep to demonstrate that FunctionLog duration
-        columns (totals, totalm, totalh) are populated correctly for
-        functions that take measurable time.
+        Includes a 1.5-second sleep to demonstrate that FunctionLog timing
+        columns (total_elapsed_ms, average_elapsed_ms, etc.) are populated
+        correctly for functions that take measurable time.
         """
         for _record in records:
             self.logger.debug(f"processing record: {_record}")
@@ -157,7 +157,7 @@ def _print_results(db: Database, app_id: str) -> None:
         rows = session.execute(select(FunctionLog).where(FunctionLog.app_id == app_id)).scalars().all()
         for row in rows:
             print(
-                f"  id={row.id} | log_role={row.log_role} | parent_log_id={row.parent_log_id}"
+                f"  id={row.id} | log_role={row.log_role} | call_count={row.call_count}"
                 f" | solved={row.solved} | failed={row.failed} | task_size={row.task_size}"
             )
         if not rows:

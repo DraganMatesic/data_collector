@@ -72,15 +72,9 @@ class TestIncrementFailed:
         token = registry.bind_context(context)
         try:
             scraper = _make_scraper()
-            scraper.increment_failed(2, error_type="timeout", error_message="Connection timed out")
+            scraper.increment_failed(2)
             assert scraper.failed == 2
             assert context.failed == 2
-            count, types_json, samples_json = context.error_snapshot()
-            assert count == 2
-            assert types_json is not None
-            assert "timeout" in types_json
-            assert samples_json is not None
-            assert "Connection timed out" in samples_json
         finally:
             registry.unbind_context(token)
 

@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from data_collector.scraping.base import BaseScraper, CategoryThreshold
 from data_collector.utilities.database.main import Database
+from data_collector.utilities.fun_watch import FunWatchContext, FunWatchRegistry
 from data_collector.utilities.request import RequestMetrics
 
 
@@ -72,9 +74,10 @@ class AsyncScraper(BaseScraper):
     ) -> None:
         """Execute async worker for each item with semaphore control.
 
-        Uses a double-check pattern on fatal_flag: once before semaphore
-        acquisition (fast path) and once after (in case flag was set while
-        waiting).
+        Registers the worker callback in AppFunctions and creates an aggregate
+        FunctionLog row with ``log_role='thread'``.  Each coroutine binds the
+        thread context so that ``increment_solved()`` / ``increment_failed()``
+        update the thread's FunctionLog row.
 
         Args:
             items: Work items to process concurrently.
@@ -85,18 +88,61 @@ class AsyncScraper(BaseScraper):
         effective_concurrency = max_concurrency if max_concurrency is not None else self.max_concurrency
         semaphore = asyncio.Semaphore(effective_concurrency)
 
+        registry = FunWatchRegistry.instance()
+        parent_context = registry.try_get_active_context()
+
+        thread_context: FunWatchContext | None = None
+        if parent_context is not None:
+            thread_context, _thread_function_hash = registry.register_thread(
+                worker, self.app_id, self.runtime,
+                main_app=getattr(self, "main_app", None),
+                caller_log_id=parent_context.log_id,
+            )
+            thread_context.task_size = len(items)
+
         async def _wrapper(item: Any, instance_id: int) -> None:
             if self.fatal_flag:
                 return
             async with semaphore:
                 if self.fatal_flag:
                     return
-                await worker(item, instance_id)
+                if thread_context is not None:
+                    token = registry.bind_context(thread_context)
+                    invocation_start = datetime.now(UTC)
+                    try:
+                        await worker(item, instance_id)
+                    finally:
+                        duration_ms = (datetime.now(UTC) - invocation_start).total_seconds() * 1000.0
+                        thread_context.record_invocation_duration(duration_ms)
+                        registry.unbind_context(token)
+                else:
+                    await worker(item, instance_id)
             if track_progress:
                 self.update_progress()
 
         tasks = [_wrapper(item, idx) for idx, item in enumerate(items)]
         await asyncio.gather(*tasks)
+
+        if thread_context is not None:
+            solved, failed = thread_context.snapshot()
+            if parent_context is not None:
+                parent_context.mark_solved(solved)
+                if failed > 0:
+                    parent_context.mark_failed(failed)
+            timing = thread_context.timing_snapshot()
+            registry.complete_function_log(
+                log_id=thread_context.log_id,
+                solved=solved,
+                failed=failed,
+                call_count=len(items),
+                end_time=datetime.now(UTC),
+                total_elapsed_ms=timing[0],
+                average_elapsed_ms=timing[1],
+                median_elapsed_ms=timing[2],
+                min_elapsed_ms=timing[3],
+                max_elapsed_ms=timing[4],
+                task_size=thread_context.task_size,
+            )
 
     async def store_async(self, records: list[Any]) -> None:
         """Serialized async wrapper for store().

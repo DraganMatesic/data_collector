@@ -41,9 +41,9 @@ class TestRunCleanup:
 
         cleaner.run_cleanup()
 
-        # 5 tables cleaned: function_log_error, function_log, logs, runtime, command_log
-        assert mock_session.execute.call_count == 5
-        assert mock_session.commit.call_count == 5
+        # 4 tables cleaned: function_log, logs, runtime, command_log
+        assert mock_session.execute.call_count == 4
+        assert mock_session.commit.call_count == 4
 
     def test_logs_when_rows_deleted(self) -> None:
         mock_database = MagicMock()
@@ -59,11 +59,11 @@ class TestRunCleanup:
         cleaner.run_cleanup()
 
         # Should log for each table that had rows deleted
-        assert mock_logger.info.call_count == 5
+        assert mock_logger.info.call_count == 4
         # Verify one of the log messages includes table name and row count
         log_message = mock_logger.info.call_args_list[0][0][0]
         assert "42" in log_message
-        assert "function_log_error" in log_message
+        assert "function_log" in log_message
 
     def test_no_logging_when_zero_rows(self) -> None:
         mock_database = MagicMock()
@@ -98,8 +98,8 @@ class TestRunCleanup:
         cleaner = LogRetentionCleaner(mock_database, settings, logger=MagicMock())
         cleaner.run_cleanup()
 
-        # delete() should be called for each of the 5 tables
-        assert mock_delete.call_count == 5
+        # delete() should be called for each of the 4 tables
+        assert mock_delete.call_count == 4
 
 
 class TestPurgeRemovedApps:

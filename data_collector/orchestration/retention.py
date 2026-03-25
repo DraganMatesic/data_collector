@@ -21,7 +21,7 @@ from sqlalchemy import delete, func, select
 from data_collector.settings.manager import ManagerSettings
 from data_collector.tables.apps import AppGroups, AppParents, Apps
 from data_collector.tables.command_log import CommandLog
-from data_collector.tables.log import FunctionLog, FunctionLogError, Logs
+from data_collector.tables.log import FunctionLog, Logs
 from data_collector.tables.runtime import Runtime
 from data_collector.utilities.database.main import Database
 
@@ -29,7 +29,7 @@ from data_collector.utilities.database.main import Database
 class LogRetentionCleaner:
     """Delete log and runtime records older than configured retention thresholds.
 
-    Handles operational table hygiene: function_log, function_log_error,
+    Handles operational table hygiene: function_log,
     logs, runtime, command_log, and app directory purge.  File storage
     retention is a separate concern handled by ``StorageJanitor``.
 
@@ -54,21 +54,13 @@ class LogRetentionCleaner:
         """Delete records exceeding their retention period.
 
         Tables cleaned (in order to respect FK constraints):
-        1. ``function_log_error`` -- FK CASCADE from function_log, but explicit
-           deletion is safer for databases without CASCADE configured.
-        2. ``function_log``
-        3. ``logs``
-        4. ``runtime``
-        5. ``command_log``
+        1. ``function_log``
+        2. ``logs``
+        3. ``runtime``
+        4. ``command_log``
         """
         now = datetime.now(UTC)
 
-        self._delete_older_than(
-            FunctionLogError,
-            FunctionLogError.date_created,
-            now - timedelta(days=self._settings.retention_function_log_days),
-            "function_log_error",
-        )
         self._delete_older_than(
             FunctionLog,
             FunctionLog.date_created,

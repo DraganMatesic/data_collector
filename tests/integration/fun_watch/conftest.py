@@ -19,7 +19,7 @@ from data_collector.tables.apps import (
     CodebookFatalFlags,
     CodebookRunStatus,
 )
-from data_collector.tables.log import FunctionLog, FunctionLogError
+from data_collector.tables.log import FunctionLog
 from data_collector.tables.runtime import Runtime
 from data_collector.utilities.database.main import Database
 from data_collector.utilities.fun_watch import FunWatchRegistry
@@ -63,7 +63,7 @@ def seed_fun_watch_parents(db: Database, db_engine: Engine) -> Generator[None]:
     yield
 
     with db.create_session() as session:
-        session.execute(delete(FunctionLogError))
+
         session.execute(delete(FunctionLog))
         session.execute(delete(AppFunctions))
         for app_kwargs in _TEST_APPS:
@@ -85,7 +85,6 @@ def reset_registry() -> None:  # noqa: PT004
 @pytest.fixture()
 def clean_fun_watch_tables(session: Session) -> None:
     """Delete all fun_watch-related rows before the test."""
-    session.execute(delete(FunctionLogError))
     session.execute(delete(FunctionLog))
     session.execute(delete(AppFunctions))
     session.commit()

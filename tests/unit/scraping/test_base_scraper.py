@@ -131,7 +131,6 @@ class TestSubclassing:
         assert scraper.base_url == "https://example.com"
 
 
-@patch(f"{_REGISTRY}.update_parent_log_role")
 @patch(f"{_REGISTRY}.complete_function_log")
 @patch(f"{_REGISTRY}.start_function_log", return_value=1)
 @patch(f"{_REGISTRY}.update_last_seen")

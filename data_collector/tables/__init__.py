@@ -20,7 +20,7 @@ from data_collector.tables.captcha import (
     CodebookCaptchaSolveStatus,
 )
 from data_collector.tables.command_log import CommandLog
-from data_collector.tables.log import CodebookLogLevel, FunctionLog, FunctionLogError, Logs
+from data_collector.tables.log import CodebookLogLevel, FunctionLog, Logs
 from data_collector.tables.notifications import CodebookAlertSeverity
 from data_collector.tables.pipeline import (
     CodebookPipelineStage,
@@ -66,7 +66,6 @@ __all__ = [
     "Events",
     "FatalFlag",
     "FunctionLog",
-    "FunctionLogError",
     "Logs",
     "PipelineTask",
     "ProxyBlacklist",

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 
 from data_collector.utilities.fun_watch import FunWatchContext
@@ -98,51 +97,75 @@ class TestFunWatchContext:
         assert completed.is_set()
         assert context.failed == 1
 
-    def test_mark_failed_backwards_compatible(self) -> None:
+    def test_mark_failed_simple(self) -> None:
         context = FunWatchContext()
         context.mark_failed(3)
         assert context.failed == 3
-        item_error_count, types_json, samples_json = context.error_snapshot()
-        assert item_error_count == 0
-        assert types_json is None
-        assert samples_json is None
 
-    def test_mark_failed_with_error_type_aggregates(self) -> None:
+    def test_call_count_initial(self) -> None:
         context = FunWatchContext()
-        context.mark_failed(2, error_type="ValueError", error_message="bad value")
-        context.mark_failed(3, error_type="KeyError", error_message="missing key")
-        context.mark_failed(1, error_type="ValueError", error_message="another bad value")
-        assert context.failed == 6
-        item_error_count, types_json, samples_json = context.error_snapshot()
-        assert item_error_count == 6
-        types = json.loads(str(types_json))
-        assert types == {"ValueError": 3, "KeyError": 3}
-        samples = json.loads(str(samples_json))
-        assert samples["ValueError"] == ["bad value", "another bad value"]
-        assert samples["KeyError"] == ["missing key"]
+        assert context.call_count == 0
 
-    def test_mark_failed_with_error_message_samples_capped(self) -> None:
+    def test_increment_call_count(self) -> None:
         context = FunWatchContext()
-        for i in range(10):
-            context.mark_failed(1, error_type="RuntimeError", error_message=f"msg_{i}")
-        item_error_count, _types_json, samples_json = context.error_snapshot()
-        assert item_error_count == 10
-        samples = json.loads(str(samples_json))
-        assert len(samples["RuntimeError"]) == 5
+        context.increment_call_count()
+        context.increment_call_count()
+        context.increment_call_count()
+        assert context.call_count == 3
 
-    def test_error_snapshot_empty_when_no_typed_errors(self) -> None:
+    def test_first_start_time_initial(self) -> None:
         context = FunWatchContext()
-        context.mark_failed(5)
-        item_error_count, types_json, samples_json = context.error_snapshot()
-        assert item_error_count == 0
-        assert types_json is None
-        assert samples_json is None
+        assert context.first_start_time is None
 
-    def test_mark_failed_error_type_without_message(self) -> None:
+    def test_invocation_durations_initial(self) -> None:
         context = FunWatchContext()
-        context.mark_failed(2, error_type="TimeoutError")
-        item_error_count, types_json, samples_json = context.error_snapshot()
-        assert item_error_count == 2
-        types = json.loads(str(types_json))
-        assert types == {"TimeoutError": 2}
-        assert samples_json is None
+        total, average, median, minimum, maximum = context.timing_snapshot()
+        assert total == 0
+        assert average == 0
+        assert median == 0
+        assert minimum == 0
+        assert maximum == 0
+
+    def test_record_invocation_duration(self) -> None:
+        context = FunWatchContext()
+        context.record_invocation_duration(100.0)
+        context.record_invocation_duration(200.0)
+        context.record_invocation_duration(300.0)
+        total, average, median, minimum, maximum = context.timing_snapshot()
+        assert total == 600
+        assert average == 200
+        assert median == 200
+        assert minimum == 100
+        assert maximum == 300
+
+    def test_timing_snapshot_single_duration(self) -> None:
+        context = FunWatchContext()
+        context.record_invocation_duration(150.0)
+        total, average, median, minimum, maximum = context.timing_snapshot()
+        assert total == 150
+        assert average == 150
+        assert median == 150
+        assert minimum == 150
+        assert maximum == 150
+
+    def test_timing_snapshot_thread_safety(self) -> None:
+        context = FunWatchContext()
+        barrier = threading.Barrier(4)
+
+        def worker() -> None:
+            barrier.wait()
+            for _ in range(100):
+                context.record_invocation_duration(10.0)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(5.0)
+
+        total, average, median, minimum, maximum = context.timing_snapshot()
+        assert total == 4000
+        assert average == 10
+        assert median == 10
+        assert minimum == 10
+        assert maximum == 10

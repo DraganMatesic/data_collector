@@ -1,22 +1,28 @@
-"""Abort signal demo: blocker DATABASE error with permanent stop.
+"""Exception handling demo: handled vs unhandled exceptions in thread callbacks.
 
-Demonstrates:
-    - ThreadedScraper with _abort_event cancelling pending futures
-    - Blocker DATABASE error (simulated) triggering immediate abort
-    - get_retry_next_run() returning None (no auto-retry for blockers)
-    - Workers cooperatively checking should_abort before work
-    - Corrected post-fatal pattern in main()
+Demonstrates two exception patterns side by side:
 
-Fetches valid book pages but simulates a DATABASE write failure on the
-3rd processed item. The DATABASE threshold (max_count=1, is_blocker=True)
-triggers immediately, sets _abort_event, and cancels remaining futures.
+1. Handled exception (try/except in app code):
+   - _scrape_page catches ValueError, calls self.logger.exception() at the
+     app call site (correct lineno, module, traceback), then increment_failed().
+   - Logs record shows traceback from the app's _scrape_page method.
+
+2. Unhandled exception (propagates to framework):
+   - _scrape_page raises RuntimeError with no try/except.
+   - wrap_with_thread_context catches it, calls logger.exception() with
+     the thread's function_id and full traceback.
+   - process_batch's except handler calls increment_failed() (counter only).
+   - Logs record shows traceback from the framework wrapper.
+
+Both tracebacks are stored in Logs.context_json under the "exception" key.
+Query: SELECT * FROM logs WHERE log_level >= 40 to inspect.
 
 Requires:
     DC_DB_MAIN_USERNAME, DC_DB_MAIN_PASSWORD, DC_DB_MAIN_DATABASENAME,
     DC_DB_MAIN_IP, DC_DB_MAIN_PORT environment variables.
 
 Run:
-    python -m data_collector.examples run scraping/abort_blocker/main
+    python -m data_collector.examples run scraping/abort_exception/main
 """
 
 from __future__ import annotations
@@ -50,17 +56,22 @@ _REQUIRED_ENV = (
     "DC_DB_MAIN_IP", "DC_DB_MAIN_PORT",
 )
 
-# Item index at which to simulate a DATABASE error
-_SIMULATE_DB_ERROR_AT = 2
+# Item indices at which to trigger each exception type
+_SIMULATE_HANDLED_AT = 2
+_SIMULATE_UNHANDLED_AT = 4
 
 
-class AbortBlocker(ThreadedScraper):
-    """Multi-threaded scraper demonstrating blocker abort via _abort_event.
+def _parse_books(content: bytes) -> list[Any]:
+    """Simulate parsing that raises ValueError on bad content."""
+    raise ValueError("Malformed HTML: unexpected <script> tag in catalogue row 3")
 
-    Fetches valid book pages but simulates a DATABASE write failure after
-    processing a few items. The DATABASE threshold triggers immediately
-    (max_count=1, is_blocker=True), sets _abort_event, and process_batch()
-    cancels remaining futures with executor.shutdown(cancel_futures=True).
+
+class AbortException(ThreadedScraper):
+    """Multi-threaded scraper demonstrating handled and unhandled exception patterns.
+
+    After a few successful items:
+    - Item N triggers a handled ValueError (caught in try/except, logged by app).
+    - Item M triggers an unhandled RuntimeError (caught by wrap_with_thread_context).
     """
 
     base_url = "https://books.toscrape.com"
@@ -68,8 +79,10 @@ class AbortBlocker(ThreadedScraper):
     def __init__(self, database: Database, **kwargs: Any) -> None:
         super().__init__(database, **kwargs)
         self.parser = Parser()
-        self._simulated_error = False
+        self._handled_triggered = False
+        self._unhandled_triggered = False
         self._simulate_lock = threading.Lock()
+        self._call_counter = 0
 
     @fun_watch
     def prepare_list(self) -> None:
@@ -80,7 +93,7 @@ class AbortBlocker(ThreadedScraper):
         ]
         self.list_size = len(self.work_list)
         self.logger.info("Work list prepared", extra={"list_size": self.list_size})
-        print(f"  Prepared {self.list_size} URLs (all valid)")
+        print(f"  Prepared {self.list_size} URLs")
 
     @fun_watch
     def collect(self) -> None:
@@ -90,33 +103,45 @@ class AbortBlocker(ThreadedScraper):
         self.process_batch(self.work_list, self._scrape_page, max_workers=2)
 
     def _scrape_page(self, item: Any, instance_id: int) -> None:
-        """Fetch one page; simulate DATABASE error on the 3rd processed item."""
+        """Fetch one page; simulate handled and unhandled exceptions."""
         if self.should_abort:
             return
 
         request = self.create_worker_request()
         response = request.get(item)
         if response is None:
-            print(f"  FAILED [{instance_id}]: {item}")
             self.logger.error(f"Connection failed: {item}")
             self.increment_failed(error_category=request.get_error_category())
             return
 
-        books = self.parser.parse_catalogue(response.content)
-
-        # Simulate DATABASE error after a few successful items
+        # Decide which failure mode to simulate based on call order
         with self._simulate_lock:
-            processed = self.solved + self.failed
-            should_simulate = not self._simulated_error and processed >= _SIMULATE_DB_ERROR_AT
-            if should_simulate:
-                self._simulated_error = True
+            call_number = self._call_counter
+            self._call_counter += 1
+            trigger_handled = not self._handled_triggered and call_number == _SIMULATE_HANDLED_AT
+            trigger_unhandled = not self._unhandled_triggered and call_number == _SIMULATE_UNHANDLED_AT
+            if trigger_handled:
+                self._handled_triggered = True
+            if trigger_unhandled:
+                self._unhandled_triggered = True
 
-        if should_simulate:
-            print(f"  SIMULATING DATABASE ERROR [{instance_id}]: {item}")
-            self.logger.error(f"Database write failure: {item}")
-            self.increment_failed(error_category=ErrorCategory.DATABASE)
+        # --- Pattern 1: Handled exception (app catches, logs, increments counter) ---
+        if trigger_handled:
+            print(f"  HANDLED EXCEPTION [{instance_id}]: {item}")
+            try:
+                _parse_books(response.content)
+            except ValueError:
+                self.logger.exception(f"Parse error on {item}")
+                self.increment_failed(error_category=ErrorCategory.PARSE)
             return
 
+        # --- Pattern 2: Unhandled exception (propagates to framework) ---
+        if trigger_unhandled:
+            print(f"  UNHANDLED EXCEPTION [{instance_id}]: {item}")
+            raise RuntimeError(f"Unexpected response format from {item}")
+
+        # Normal processing
+        books = self.parser.parse_catalogue(response.content)
         if books:
             self.store(books)
         print(f"  OK [{instance_id}]: {item} ({len(books)} books)")
@@ -169,7 +194,7 @@ def _register_app(database: Database, app_info: AppInfo) -> None:
 
 
 def _update_runtime(
-    database: Database, runtime: str, start_time: datetime, scraper: AbortBlocker | None,
+    database: Database, runtime: str, start_time: datetime, scraper: AbortException | None,
 ) -> None:
     """Finalize the Runtime record with end time and counters."""
     end_time = datetime.now(UTC)
@@ -194,7 +219,7 @@ def _update_runtime(
 
 
 def main() -> None:
-    """Blocker abort demo: simulated DATABASE error triggers permanent stop."""
+    """Exception handling demo: handled vs unhandled exceptions in thread callbacks."""
     missing = [v for v in _REQUIRED_ENV if not os.environ.get(v)]
     if missing:
         print(f"Skipping: DB env vars not set: {', '.join(missing)}")
@@ -202,7 +227,6 @@ def main() -> None:
 
     FunWatchRegistry.reset()
 
-    # Deploy all tables into dc_example schema (non-destructive) + codebook seed data
     deploy = ExampleDeploy()
     deploy.create_tables()
     deploy.populate_tables()
@@ -235,13 +259,14 @@ def main() -> None:
         session.merge(Runtime(runtime=runtime, app_id=app_id, start_time=start_time))
         session.commit()
 
-    print("\n--- Abort Blocker Demo: DATABASE Error ---")
-    print(f"Expected: ~{_SIMULATE_DB_ERROR_AT} OK, then simulated DATABASE error triggers blocker abort\n")
+    print("\n--- Exception Handling Demo: Handled vs Unhandled ---")
+    print(f"  Item {_SIMULATE_HANDLED_AT}: handled ValueError (app catches, logs traceback)")
+    print(f"  Item {_SIMULATE_UNHANDLED_AT}: unhandled RuntimeError (framework catches, logs traceback)\n")
 
-    scraper: AbortBlocker | None = None
+    scraper: AbortException | None = None
     try:
         metrics = RequestMetrics()
-        scraper = AbortBlocker(
+        scraper = AbortException(
             database, logger=logger, runtime=runtime, app_id=app_id, metrics=metrics, max_workers=2,
             category_thresholds=DEFAULT_CATEGORY_THRESHOLDS,
         )
@@ -249,7 +274,6 @@ def main() -> None:
         scraper.collect()
         scraper.fatal_check()
 
-        # Corrected post-fatal pattern: use get_retry_next_run() when fatal
         if scraper.should_abort:
             scraper.next_run = scraper.get_retry_next_run()
             if scraper.next_run is not None:
@@ -258,12 +282,11 @@ def main() -> None:
                 print("\n  BLOCKER: no retry, manual intervention required")
         else:
             scraper.set_next_run()
-            print(f"\n  Normal completion: next_run={scraper.next_run}")
 
         print(f"\n  Results: solved={scraper.solved}, failed={scraper.failed}")
-        print(f"  list_size={scraper.list_size}, max_workers={scraper.max_workers}")
         print(f"  fatal_flag={scraper.fatal_flag}")
-        print(f"  fatal_msg={scraper.fatal_msg or 'none'}")
+        print("  Check Logs table: SELECT * FROM dc_example.logs WHERE log_level >= 40")
+        print("  Both records should have traceback in context_json")
 
         scraper.update_progress(force=True)
         update_app_status(
