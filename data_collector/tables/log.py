@@ -1,7 +1,19 @@
 """Logging ORM tables and related codebooks."""
 
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, UnicodeText, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UnicodeText,
+    UniqueConstraint,
+    func,
+    text,
+)
 
 from data_collector.tables.apps import AppFunctions, Apps
 from data_collector.tables.runtime import Runtime
@@ -61,9 +73,12 @@ class Logs(Base):
 
 
 class FunctionLog(Base):
-    """Per-invocation execution metrics recorded by @fun_watch."""
+    """Per-function-per-runtime aggregate execution metrics recorded by @fun_watch."""
 
     __tablename__ = "function_log"
+    __table_args__ = (
+        UniqueConstraint("function_hash", "runtime", name="uq_function_log_function_runtime"),
+    )
 
     id = auto_increment_column()
     function_hash = Column(
@@ -71,13 +86,10 @@ class FunctionLog(Base):
         ForeignKey(AppFunctions.function_hash, ondelete="CASCADE"),
         index=True,
     )
-    execution_order = Column(BigInteger, nullable=False)
-    thread_execution_order = Column(BigInteger, nullable=False, server_default=text("0"))
-    log_role = Column(String(16), nullable=False, server_default=text("'single'"))
-    parent_log_id = Column(BigInteger)
+    log_role = Column(String(16), nullable=False, server_default=text("'function'"))
     main_app = Column(String(64), index=True)
     app_id = Column(String(64), index=True)
-    thread_id = Column(BigInteger)
+    call_count = Column(BigInteger, nullable=False, server_default=text("1"))
     task_size = Column(BigInteger)
     solved = Column(Integer, server_default=text("0"))
     failed = Column(Integer, server_default=text("0"))
@@ -85,36 +97,18 @@ class FunctionLog(Base):
     is_success = Column(Boolean, nullable=False, server_default=text("true"))
     start_time = Column(DateTime(timezone=True))
     end_time = Column(DateTime(timezone=True))
-    totals = Column(Integer)
-    totalm = Column(Integer)
-    totalh = Column(Integer)
+    total_elapsed_ms = Column(BigInteger, doc="Sum of all invocation durations in milliseconds")
+    average_elapsed_ms = Column(Integer, doc="Mean invocation duration in milliseconds")
+    median_elapsed_ms = Column(Integer, doc="P50 invocation duration in milliseconds")
+    min_elapsed_ms = Column(Integer, doc="Fastest invocation duration in milliseconds")
+    max_elapsed_ms = Column(Integer, doc="Slowest invocation duration in milliseconds")
+    caller_log_id = Column(
+        BigInteger,
+        doc="Self-referential FK to the caller's FunctionLog id. Set on log_role='thread' rows only.",
+    )
     runtime = Column(
         String(64),
         ForeignKey(Runtime.runtime, ondelete="CASCADE"),
         index=True,
     )
-    date_created = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class FunctionLogError(Base):
-    """Error details for failed @fun_watch invocations."""
-
-    __tablename__ = "function_log_error"
-
-    id = auto_increment_column()
-    function_log_id = Column(
-        BigInteger,
-        ForeignKey(FunctionLog.id, ondelete="CASCADE"),
-        nullable=False,
-        unique=True,
-        index=True,
-    )
-    error_type = Column(String(256), doc="Exception class name")
-    error_message = Column(UnicodeText, doc="Exception message string")
-    item_error_count = Column(
-        Integer, nullable=False, server_default=text("0"),
-        doc="Count of items with typed errors via mark_failed(error_type=...)",
-    )
-    item_error_types_json = Column(UnicodeText, doc="JSON: error type -> count mapping")
-    item_error_samples_json = Column(UnicodeText, doc="JSON: error type -> sample messages (max 5 per type)")
     date_created = Column(DateTime(timezone=True), server_default=func.now())

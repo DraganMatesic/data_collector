@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import BigInteger
 from sqlalchemy import inspect as sa_inspect
 
 from data_collector.tables.apps import AppFunctions
-from data_collector.tables.log import FunctionLog, FunctionLogError
+from data_collector.tables.log import FunctionLog
 
 
 class TestAppFunctions:
@@ -51,14 +50,32 @@ class TestFunctionLog:
     def test_columns_present(self) -> None:
         columns = {c.name for c in sa_inspect(FunctionLog).columns}
         expected = {
-            "id", "function_hash", "execution_order", "thread_execution_order",
-            "log_role", "parent_log_id", "main_app", "app_id",
-            "thread_id", "task_size", "solved", "failed",
+            "id", "function_hash", "log_role", "main_app", "app_id",
+            "call_count", "task_size", "solved", "failed",
             "processed_count", "is_success",
-            "start_time", "end_time", "totals", "totalm", "totalh",
-            "runtime", "date_created",
+            "start_time", "end_time",
+            "total_elapsed_ms", "average_elapsed_ms", "median_elapsed_ms",
+            "min_elapsed_ms", "max_elapsed_ms",
+            "caller_log_id", "runtime", "date_created",
         }
         assert expected.issubset(columns)
+
+    def test_removed_columns_absent(self) -> None:
+        columns = {c.name for c in sa_inspect(FunctionLog).columns}
+        removed = {
+            "execution_order", "thread_execution_order", "parent_log_id",
+            "thread_id", "totals", "totalm", "totalh",
+        }
+        assert removed.isdisjoint(columns)
+
+    def test_unique_constraint_function_hash_runtime(self) -> None:
+        constraints = FunctionLog.__table__.constraints
+        unique_constraints = [c for c in constraints if hasattr(c, "columns") and len(c.columns) == 2]
+        found = any(
+            {col.name for col in c.columns} == {"function_hash", "runtime"}
+            for c in unique_constraints
+        )
+        assert found, "UniqueConstraint on (function_hash, runtime) not found"
 
     def test_function_hash_foreign_key(self) -> None:
         fks = {fk.target_fullname for fk in FunctionLog.__table__.foreign_keys}
@@ -68,40 +85,14 @@ class TestFunctionLog:
         fks = {fk.target_fullname for fk in FunctionLog.__table__.foreign_keys}
         assert "runtime.runtime" in fks
 
-    def test_thread_id_is_big_integer(self) -> None:
-        col = FunctionLog.__table__.c.thread_id
-        assert isinstance(col.type, BigInteger)
-
     def test_indexed_columns(self) -> None:
         table = FunctionLog.__table__
         for col_name in ("function_hash", "main_app", "app_id", "runtime"):
             assert table.c[col_name].index is True, f"{col_name} should be indexed"
 
-
-class TestFunctionLogError:
-    def test_tablename(self) -> None:
-        assert FunctionLogError.__tablename__ == "function_log_error"
-
-    def test_columns_present(self) -> None:
-        columns = {c.name for c in sa_inspect(FunctionLogError).columns}
-        expected = {
-            "id", "function_log_id", "error_type", "error_message", "item_error_count",
-            "item_error_types_json", "item_error_samples_json", "date_created",
-        }
-        assert expected.issubset(columns)
-
-    def test_function_log_id_foreign_key(self) -> None:
-        fks = {fk.target_fullname for fk in FunctionLogError.__table__.foreign_keys}
-        assert "function_log.id" in fks
-
-    def test_function_log_id_unique_and_not_nullable(self) -> None:
-        col = FunctionLogError.__table__.c.function_log_id
-        assert col.unique is True
-        assert col.nullable is False
-
-    def test_function_log_id_indexed(self) -> None:
-        col = FunctionLogError.__table__.c.function_log_id
-        assert col.index is True
+    def test_function_log_error_table_removed(self) -> None:
+        from data_collector.tables import log
+        assert not hasattr(log, "FunctionLogError"), "FunctionLogError table should be removed"
 
 
 class TestExports:
@@ -113,6 +104,6 @@ class TestExports:
         from data_collector.tables import FunctionLog as Exported
         assert Exported is FunctionLog
 
-    def test_function_log_error_exported(self) -> None:
-        from data_collector.tables import FunctionLogError as Exported
-        assert Exported is FunctionLogError
+    def test_function_log_error_not_exported(self) -> None:
+        import data_collector.tables as tables_module
+        assert not hasattr(tables_module, "FunctionLogError")

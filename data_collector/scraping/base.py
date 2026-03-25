@@ -216,16 +216,12 @@ class BaseScraper(FunWatchMixin):
         count: int = 1,
         *,
         error_category: ErrorCategory | str | None = None,
-        error_type: str | None = None,
-        error_message: str | None = None,
     ) -> None:
         """Thread-safe increment of failed counter with FunWatchContext forwarding.
 
         Args:
             count: Number to add (default 1).
             error_category: ErrorCategory for per-category threshold evaluation.
-            error_type: Optional error classification for FunWatchContext.
-            error_message: Optional error description for FunWatchContext.
         """
         with self._progress_lock:
             self.failed += count
@@ -238,7 +234,7 @@ class BaseScraper(FunWatchMixin):
                 )
         active_context = FunWatchRegistry.instance().try_get_active_context()
         if active_context is not None:
-            active_context.mark_failed(count, error_type=error_type, error_message=error_message)
+            active_context.mark_failed(count)
         self._check_failure_threshold()
 
     def _check_failure_threshold(self) -> None:

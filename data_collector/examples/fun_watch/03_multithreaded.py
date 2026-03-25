@@ -3,10 +3,9 @@
 Demonstrates:
     - Real LoggingService integration (Logs table inserts via DatabaseHandler)
     - ThreadPoolExecutor with multiple workers calling the same decorated method
-    - Each thread gets its own context-local FunWatchContext (no cross-talk)
-    - execution_order increments per (runtime, thread_id) pair
-    - Thread-safe counter updates (no data corruption)
-    - Per-thread FunctionLog rows with distinct thread_ids in database
+    - All threads share one aggregate FunWatchContext per function per runtime
+    - Thread-safe counter updates via _counter_lock (no data corruption)
+    - One FunctionLog row per function per runtime (aggregate model)
     - Partial failure: mark_solved() + mark_failed() with exception re-raise
 
 Requires:
@@ -38,7 +37,7 @@ from sqlalchemy import select
 from data_collector.settings.main import LogSettings
 from data_collector.tables.apps import AppFunctions, AppGroups, AppParents, Apps
 from data_collector.tables.deploy import ExampleDeploy
-from data_collector.tables.log import FunctionLog, FunctionLogError, Logs
+from data_collector.tables.log import FunctionLog, Logs
 from data_collector.tables.runtime import Runtime
 from data_collector.utilities.database.main import Database
 from data_collector.utilities.fun_watch import FunWatchMixin, FunWatchRegistry, fun_watch
@@ -161,50 +160,32 @@ def _print_results(db: Database, app_id: str) -> None:
         ).scalars().all()
         for row in log_rows:
             print(
-                f"  id={row.id} | log_role={row.log_role} | parent_log_id={row.parent_log_id}"
+                f"  id={row.id} | log_role={row.log_role} | call_count={row.call_count}"
                 f" | solved={row.solved} | failed={row.failed} | task_size={row.task_size}"
-                f" | thread_id={row.thread_id} | is_success={row.is_success}"
+                f" | is_success={row.is_success}"
             )
         if not log_rows:
             print("  (none)")
 
-        # --- Error details from FunctionLogError ---
-        log_ids: list[int] = [int(row.id) for row in log_rows]  # type: ignore[arg-type]
-        if log_ids:
-            error_rows = session.execute(
-                select(FunctionLogError).where(FunctionLogError.function_log_id.in_(log_ids))
-            ).scalars().all()
-            if error_rows:
-                print("\n=== FunctionLogError rows ===")
-                for err in error_rows:
-                    print(
-                        f"  id={err.id} | function_log_id={err.function_log_id}"
-                        f" | error_type={err.error_type}"
-                        f" | error_message={err.error_message}"
-                        f" | item_error_count={err.item_error_count}"
-                        f" | types_json={err.item_error_types_json}"
-                        f" | samples_json={err.item_error_samples_json}"
-                    )
-
-        # --- Per-thread summary table ---
+        # --- Aggregate summary ---
         if log_rows:
-            print("\n=== Per-thread summary ===")
-            print(f"  {'thread_id':>12}  {'execution_order':>15}  {'task_size':>10}  {'solved':>7}")
-            print(f"  {'-' * 12}  {'-' * 15}  {'-' * 10}  {'-' * 7}")
-            for row in sorted(log_rows, key=lambda r: (r.thread_id or 0, r.execution_order or 0)):
+            print("\n=== Aggregate summary ===")
+            print(f"  {'log_role':>12}  {'call_count':>12}  {'task_size':>10}  {'solved':>7}")
+            print(f"  {'-' * 12}  {'-' * 12}  {'-' * 10}  {'-' * 7}")
+            for row in sorted(log_rows, key=lambda r: r.id or 0):
                 print(
-                    f"  {row.thread_id or '':>12}  "
-                    f"{row.execution_order or '':>15}  "
+                    f"  {row.log_role or '':>12}  "
+                    f"{row.call_count or '':>12}  "
                     f"{row.task_size or '':>10}  "
                     f"{row.solved or '':>7}"
                 )
 
-        # --- Thread isolation verification ---
-        print("\n=== Thread isolation verification ===")
-        actual_solved = {row.solved for row in log_rows}
-        distinct_threads = {row.thread_id for row in log_rows}
-        print(f"  Actual solved values  : {sorted(actual_solved)}")
-        print(f"  Distinct thread IDs   : {len(distinct_threads)}")
+        # --- Aggregate verification ---
+        print("\n=== Aggregate verification ===")
+        total_solved = sum(row.solved or 0 for row in log_rows)
+        total_rows = len(log_rows)
+        print(f"  Total FunctionLog rows: {total_rows}")
+        print(f"  Total solved across all aggregates: {total_solved}")
 
         print("\n=== Logs rows (lifecycle events) ===")
         logs_rows = session.execute(

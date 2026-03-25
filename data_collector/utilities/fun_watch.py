@@ -1,7 +1,7 @@
 """@fun_watch decorator for function-level performance monitoring.
 
-Provides automatic function registration (AppFunctions) and per-invocation
-metric recording (FunctionLog) with thread-safe context-local counters.
+Provides automatic function registration (AppFunctions) and per-function-per-runtime
+aggregate metric recording (FunctionLog) with thread-safe context-local counters.
 Binds ``function_id`` into structlog context for log correlation.
 """
 
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import functools
 import inspect
-import json
 import logging
+import statistics
 import sys
 import threading
 from collections.abc import Callable
@@ -21,13 +21,11 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import structlog  # type: ignore[import-untyped]
-from sqlalchemy import select
 
 from data_collector.settings.main import MainDatabaseSettings
 from data_collector.tables.apps import AppFunctions
-from data_collector.tables.log import FunctionLog, FunctionLogError
+from data_collector.tables.log import FunctionLog
 from data_collector.utilities.database.main import Database
-from data_collector.utilities.functions.math import get_totalh, get_totalm, get_totals
 from data_collector.utilities.functions.runtime import make_hash
 
 logger = structlog.get_logger(__name__)
@@ -82,67 +80,71 @@ def _get_class_lineno(cls: type, fallback: int) -> int:
 
 
 class FunWatchContext:
-    """Per-invocation counters used by the ``@fun_watch`` wrapper.
+    """Aggregate counters for a single function within a single runtime.
 
-    Application code updates the active invocation context through
-    ``self._fun_watch.mark_solved()`` / ``self._fun_watch.mark_failed()``.
-    The active context is bound using context-local state.
+    One context exists per (function_hash, runtime) pair. Application code
+    updates the active context through ``self._fun_watch.mark_solved()`` /
+    ``self._fun_watch.mark_failed()``. The context accumulates metrics
+    across all invocations of that function within the runtime.
     """
 
-    _MAX_ERROR_SAMPLES: int = 5
-
-    __slots__ = ("solved", "failed", "task_size", "log_id", "_counter_lock", "_error_types", "_error_samples")
+    __slots__ = (
+        "solved", "failed", "task_size", "log_id", "call_count",
+        "first_start_time", "_invocation_durations", "_counter_lock",
+    )
 
     def __init__(self, task_size: int | None = None) -> None:
         self.solved: int = 0
         self.failed: int = 0
         self.task_size: int | None = task_size
         self.log_id: int | None = None
+        self.call_count: int = 0
+        self.first_start_time: datetime | None = None
+        self._invocation_durations: list[float] = []
         self._counter_lock = threading.Lock()
-        self._error_types: dict[str, int] = {}
-        self._error_samples: dict[str, list[str]] = {}
+
+    def increment_call_count(self) -> None:
+        """Atomically increment call_count."""
+        with self._counter_lock:
+            self.call_count += 1
+
+    def record_invocation_duration(self, duration_ms: float) -> None:
+        """Record the duration of a single invocation in milliseconds."""
+        with self._counter_lock:
+            self._invocation_durations.append(duration_ms)
+
+    def timing_snapshot(self) -> tuple[int, int, int, int, int]:
+        """Return an atomic snapshot of timing statistics.
+
+        Returns:
+            Tuple of (total_elapsed_ms, average_elapsed_ms, median_elapsed_ms,
+            min_elapsed_ms, max_elapsed_ms). All zeros when no durations recorded.
+        """
+        with self._counter_lock:
+            if not self._invocation_durations:
+                return 0, 0, 0, 0, 0
+            durations = list(self._invocation_durations)
+        total_elapsed_ms = int(sum(durations))
+        average_elapsed_ms = int(total_elapsed_ms / len(durations))
+        median_elapsed_ms = int(statistics.median(durations))
+        min_elapsed_ms = int(min(durations))
+        max_elapsed_ms = int(max(durations))
+        return total_elapsed_ms, average_elapsed_ms, median_elapsed_ms, min_elapsed_ms, max_elapsed_ms
 
     def mark_solved(self, count: int = 1) -> None:
         """Increment the solved counter."""
         with self._counter_lock:
             self.solved += count
 
-    def mark_failed(
-        self,
-        count: int = 1,
-        *,
-        error_type: str | None = None,
-        error_message: str | None = None,
-    ) -> None:
-        """Increment the failed counter with optional error detail aggregation."""
+    def mark_failed(self, count: int = 1) -> None:
+        """Increment the failed counter."""
         with self._counter_lock:
             self.failed += count
-            if error_type is not None:
-                self._error_types[error_type] = self._error_types.get(error_type, 0) + count
-                if error_message is not None:
-                    samples = self._error_samples.setdefault(error_type, [])
-                    if len(samples) < self._MAX_ERROR_SAMPLES:
-                        samples.append(error_message)
 
     def snapshot(self) -> tuple[int, int]:
         """Return an atomic snapshot of solved and failed counters."""
         with self._counter_lock:
             return self.solved, self.failed
-
-    def error_snapshot(self) -> tuple[int, str | None, str | None]:
-        """Return an atomic snapshot of item error details.
-
-        Returns:
-            Tuple of (item_error_count, item_error_types_json, item_error_samples_json).
-            JSON strings are None when no typed errors were recorded.
-        """
-        with self._counter_lock:
-            if not self._error_types:
-                return 0, None, None
-            item_error_count = sum(self._error_types.values())
-            types_json = json.dumps(self._error_types, separators=(",", ":"))
-            samples_json = json.dumps(self._error_samples, separators=(",", ":")) if self._error_samples else None
-            return item_error_count, types_json, samples_json
 
 
 class _FunWatchContextProxy:
@@ -157,15 +159,9 @@ class _FunWatchContextProxy:
         """Forward solved counter updates to the active invocation context."""
         self._registry.get_active_context().mark_solved(count)
 
-    def mark_failed(
-        self,
-        count: int = 1,
-        *,
-        error_type: str | None = None,
-        error_message: str | None = None,
-    ) -> None:
+    def mark_failed(self, count: int = 1) -> None:
         """Forward failed counter updates to the active invocation context."""
-        self._registry.get_active_context().mark_failed(count, error_type=error_type, error_message=error_message)
+        self._registry.get_active_context().mark_failed(count)
 
     def set_task_size(self, size: int) -> None:
         """Set the task_size on the active invocation context."""
@@ -188,7 +184,7 @@ class FunWatchMixin:
 
 
 class FunWatchRegistry:
-    """Thread-safe singleton that manages function registration, counters, and DB access.
+    """Thread-safe singleton that manages function registration, aggregate contexts, and DB access.
 
     All mutable state lives here instead of in module-level globals.
     Access the singleton via ``FunWatchRegistry.instance()``.
@@ -201,10 +197,8 @@ class FunWatchRegistry:
         self._registered_functions: dict[str, bool] = {}
         self._registration_lock = threading.Lock()
 
-        self._global_counters: dict[str, int] = {}
-        self._thread_counters: dict[tuple[str, int], int] = {}
-        self._counter_lock = threading.Lock()
-        self._current_runtime: str | None = None
+        self._aggregate_contexts: dict[tuple[str, str], FunWatchContext] = {}
+        self._aggregate_lock = threading.Lock()
 
         self._default_lifecycle_log_level: int = logging.DEBUG
 
@@ -263,27 +257,6 @@ class FunWatchRegistry:
         """
         self._default_lifecycle_log_level = level
 
-    def next_execution_order(self, runtime_id: str, thread_id: int) -> tuple[int, int]:
-        """Return and increment (global_order, thread_order) execution ordinals.
-
-        global_order increments across all threads (chronological).
-        thread_order increments independently per thread.
-
-        Clears stale counters when a new runtime_id is detected to prevent
-        unbounded memory growth in long-running processes.
-        """
-        thread_key = (runtime_id, thread_id)
-        with self._counter_lock:
-            if self._current_runtime is not None and self._current_runtime != runtime_id:
-                self._global_counters.clear()
-                self._thread_counters.clear()
-            self._current_runtime = runtime_id
-            global_order = self._global_counters.get(runtime_id, 0) + 1
-            self._global_counters[runtime_id] = global_order
-            thread_order = self._thread_counters.get(thread_key, 0) + 1
-            self._thread_counters[thread_key] = thread_order
-        return global_order, thread_order
-
     def bind_context(self, context: FunWatchContext) -> Token[FunWatchContext | None]:
         """Bind invocation context for the current execution flow."""
         return self._active_context.set(context)
@@ -328,19 +301,125 @@ class FunWatchRegistry:
 
         return wrapped
 
+    def wrap_with_thread_context(
+        self,
+        func: Callable[..., T],
+        thread_context: FunWatchContext,
+        thread_function_hash: str,
+        application_logger: Any = None,
+    ) -> Callable[..., T]:
+        """Wrap callable so worker threads use a dedicated thread aggregate context.
+
+        Unlike ``wrap_with_active_context`` which propagates the parent context,
+        this binds the ``thread_context`` so that ``mark_solved()`` /
+        ``mark_failed()`` update the thread callback's aggregate FunctionLog row.
+        Per-invocation duration is measured and recorded on the thread context.
+        Structlog contextvars are propagated from the parent for log correlation,
+        with ``function_id`` overridden to the thread's function hash so that
+        error logs point to the correct FunctionLog row.
+
+        Args:
+            func: The worker callable to wrap.
+            thread_context: Aggregate context for the thread callback.
+            thread_function_hash: Function hash for structlog function_id binding.
+            application_logger: App-level logger with DatabaseHandler attached.
+                When provided, unhandled exceptions are persisted to the Logs table.
+                Falls back to the module-level logger (stderr only) when None.
+        """
+        parent_structlog_context = structlog.contextvars.get_contextvars()
+        exception_logger = application_logger if application_logger is not None else logger
+
+        @functools.wraps(func)
+        def wrapped(*args: Any, **kwargs: Any) -> T:
+            token = self.bind_context(thread_context)
+            structlog.contextvars.bind_contextvars(**parent_structlog_context)
+            parent_chain = parent_structlog_context.get("call_chain", "")
+            worker_name = getattr(func, "__qualname__", None) or getattr(func, "__name__", "worker")
+            extended_chain = f"{parent_chain} -> {worker_name}" if parent_chain else worker_name
+            structlog.contextvars.bind_contextvars(
+                thread_id=threading.get_ident(),
+                call_chain=extended_chain,
+                function_id=thread_function_hash,
+                function_name=worker_name,
+            )
+            invocation_start = datetime.now(UTC)
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:
+                thread_context.mark_failed(1)
+                traceback_frame = exc.__traceback__
+                exception_module_path = ""
+                exception_lineno = 0
+                if traceback_frame is not None:
+                    while traceback_frame.tb_next is not None:
+                        traceback_frame = traceback_frame.tb_next
+                    exception_module_path = traceback_frame.tb_frame.f_code.co_filename
+                    exception_lineno = traceback_frame.tb_lineno
+                exception_logger.exception(
+                    f"Unhandled exception in thread callback {worker_name}",
+                    module_name=Path(exception_module_path).name if exception_module_path else None,
+                    module_path=exception_module_path or None,
+                    lineno=exception_lineno or None,
+                )
+                raise
+            finally:
+                duration_ms = (datetime.now(UTC) - invocation_start).total_seconds() * 1000.0
+                thread_context.record_invocation_duration(duration_ms)
+                structlog.contextvars.unbind_contextvars(*parent_structlog_context.keys(), "function_name")
+                self.unbind_context(token)
+
+        return wrapped
+
     def try_get_active_context(self) -> FunWatchContext | None:
         """Return the currently active context, or None if none is bound."""
         return self._active_context.get()
-
-    def get_parent_log_id(self) -> int | None:
-        """Return the log_id of the currently active context, or None."""
-        context = self._active_context.get()
-        return context.log_id if context is not None else None
 
     def ensure_context_proxy(self, instance: Any) -> None:
         """Attach the stable context proxy to instance as ``_fun_watch``."""
         if getattr(instance, "_fun_watch", None) is not self._context_proxy:
             instance._fun_watch = self._context_proxy
+
+    def get_or_create_aggregate_context(
+        self,
+        function_hash: str,
+        runtime_id: str,
+        *,
+        main_app: str,
+        app_id: str,
+        start_time: datetime,
+        log_role: str = "function",
+        caller_log_id: int | None = None,
+    ) -> FunWatchContext:
+        """Return the aggregate context for (function_hash, runtime_id), creating one on first call.
+
+        Uses double-checked locking: fast-path read without lock, then atomic
+        creation under ``_aggregate_lock`` on first access.  The FunctionLog
+        INSERT happens inside the lock to guarantee exactly one row per function
+        per runtime.
+        """
+        key = (function_hash, runtime_id)
+        context = self._aggregate_contexts.get(key)
+        if context is not None:
+            return context
+
+        with self._aggregate_lock:
+            context = self._aggregate_contexts.get(key)
+            if context is not None:
+                return context
+
+            context = FunWatchContext()
+            context.first_start_time = start_time
+            context.log_id = self.start_function_log(
+                function_hash=function_hash,
+                main_app=main_app,
+                app_id=app_id,
+                start_time=start_time,
+                runtime_id=runtime_id,
+                log_role=log_role,
+                caller_log_id=caller_log_id,
+            )
+            self._aggregate_contexts[key] = context
+            return context
 
     def register_function(
         self,
@@ -385,12 +464,54 @@ class FunWatchRegistry:
             except Exception:
                 logger.exception("Failed to register function", function_name=function_name)
 
+    def register_thread(
+        self,
+        callback: Callable[..., Any],
+        app_id: str,
+        runtime_id: str,
+        *,
+        main_app: str | None = None,
+        caller_log_id: int | None = None,
+    ) -> tuple[FunWatchContext, str]:
+        """Register a thread pool callback in AppFunctions and create its aggregate FunctionLog.
+
+        Used by ``process_batch()`` to make thread callbacks visible in
+        AppFunctions and FunctionLog with ``log_role='thread'``.
+
+        Args:
+            callback: The worker callable (e.g. ``self._scrape_page``).
+            app_id: Application hash identifier.
+            runtime_id: Current runtime hash.
+            main_app: Root app hash (defaults to app_id).
+            caller_log_id: FunctionLog id of the caller (for thread-to-caller navigability).
+
+        Returns:
+            Tuple of (aggregate FunWatchContext, function_hash for structlog binding).
+        """
+        function_name = getattr(callback, "__qualname__", None) or getattr(callback, "__name__", "thread_callback")
+        function_hash = str(make_hash(app_id + function_name))
+        filepath = inspect.getfile(callback) if hasattr(callback, "__code__") else ""
+
+        self.register_function(function_hash, function_name, filepath, app_id)
+
+        context = self.get_or_create_aggregate_context(
+            function_hash,
+            runtime_id,
+            main_app=main_app or app_id,
+            app_id=app_id,
+            start_time=datetime.now(UTC),
+            log_role="thread",
+            caller_log_id=caller_log_id,
+        )
+        return context, function_hash
+
     def update_last_seen(self, function_hash: str) -> None:
         """Touch AppFunctions.last_seen for the given hash."""
         db = self._get_system_db()
         try:
             with db.create_session() as session:
-                stmt = select(AppFunctions).where(AppFunctions.function_hash == function_hash)
+                from sqlalchemy import select as sa_select
+                stmt = sa_select(AppFunctions).where(AppFunctions.function_hash == function_hash)
                 record = db.query(stmt, session).scalar_one_or_none()
                 if record is not None:
                     record.last_seen = datetime.now(UTC)  # type: ignore[assignment]
@@ -402,32 +523,24 @@ class FunWatchRegistry:
         self,
         *,
         function_hash: str,
-        execution_order: int,
-        thread_execution_order: int,
         main_app: str,
         app_id: str,
-        thread_id: int,
-        task_size: int | None,
         start_time: datetime,
         runtime_id: str,
-        parent_log_id: int | None,
         log_role: str,
+        caller_log_id: int | None = None,
     ) -> int | None:
-        """INSERT a partial FunctionLog row and return its auto-generated id."""
+        """INSERT a FunctionLog row for a new (function_hash, runtime) aggregate."""
         db = self._get_system_db()
         try:
             record = FunctionLog(
                 function_hash=function_hash,
-                execution_order=execution_order,
-                thread_execution_order=thread_execution_order,
                 main_app=main_app,
                 app_id=app_id,
-                thread_id=thread_id,
-                task_size=task_size,
                 start_time=start_time,
                 runtime=runtime_id,
-                parent_log_id=parent_log_id,
                 log_role=log_role,
+                caller_log_id=caller_log_id,
             )
             with db.create_session() as session:
                 db.add(record, session, flush=True)
@@ -444,17 +557,17 @@ class FunWatchRegistry:
         log_id: int | None,
         solved: int,
         failed: int,
-        start_time: datetime,
+        call_count: int,
         end_time: datetime,
+        total_elapsed_ms: int,
+        average_elapsed_ms: int,
+        median_elapsed_ms: int,
+        min_elapsed_ms: int,
+        max_elapsed_ms: int,
         exc_occurred: bool = False,
-        error_type: str | None = None,
-        error_message: str | None = None,
-        item_error_count: int = 0,
-        item_error_types_json: str | None = None,
-        item_error_samples_json: str | None = None,
         task_size: int | None = None,
     ) -> None:
-        """UPDATE an existing FunctionLog row with final metrics and error details."""
+        """UPDATE an existing FunctionLog row with aggregate metrics."""
         if log_id is None:
             return
         db = self._get_system_db()
@@ -464,69 +577,28 @@ class FunWatchRegistry:
                 if record is not None:
                     record.solved = solved  # type: ignore[assignment]
                     record.failed = failed  # type: ignore[assignment]
+                    record.call_count = call_count  # type: ignore[assignment]
                     record.processed_count = solved + failed  # type: ignore[assignment]
                     record.is_success = not exc_occurred and failed == 0  # type: ignore[assignment]
                     record.end_time = end_time  # type: ignore[assignment]
-                    record.totals = get_totals(start_time, end_time)  # type: ignore[assignment]
-                    record.totalm = get_totalm(start_time, end_time)  # type: ignore[assignment]
-                    record.totalh = get_totalh(start_time, end_time)  # type: ignore[assignment]
+                    record.total_elapsed_ms = total_elapsed_ms  # type: ignore[assignment]
+                    record.average_elapsed_ms = average_elapsed_ms  # type: ignore[assignment]
+                    record.median_elapsed_ms = median_elapsed_ms  # type: ignore[assignment]
+                    record.min_elapsed_ms = min_elapsed_ms  # type: ignore[assignment]
+                    record.max_elapsed_ms = max_elapsed_ms  # type: ignore[assignment]
                     if task_size is not None:
                         record.task_size = task_size  # type: ignore[assignment]
-                    if error_type is not None or item_error_count > 0:
-                        # When no Python exception was caught but item-level errors
-                        # were tracked via mark_failed(), derive the top-level
-                        # error_type and error_message from the dominant error type.
-                        effective_error_type = error_type
-                        effective_error_message = error_message
-                        if effective_error_type is None and item_error_types_json:
-                            try:
-                                error_types: dict[str, int] = json.loads(item_error_types_json)
-                                if error_types:
-                                    dominant_type = max(error_types, key=lambda key: error_types[key])
-                                    effective_error_type = dominant_type
-                                    if effective_error_message is None and item_error_samples_json:
-                                        samples: dict[str, list[str]] = json.loads(item_error_samples_json)
-                                        dominant_samples = samples.get(dominant_type, [])
-                                        if dominant_samples:
-                                            effective_error_message = dominant_samples[0]
-                            except (json.JSONDecodeError, TypeError, KeyError):
-                                pass
-                        error_record = FunctionLogError(
-                            function_log_id=log_id,
-                            error_type=effective_error_type,
-                            error_message=effective_error_message,
-                            item_error_count=item_error_count,
-                            item_error_types_json=item_error_types_json,
-                            item_error_samples_json=item_error_samples_json,
-                        )
-                        db.add(error_record, session)
                     session.commit()
         except Exception:
             logger.exception("Failed to complete FunctionLog", log_id=log_id)
 
-    def update_parent_log_role(self, log_id: int | None) -> None:
-        """Update a FunctionLog row's log_role to 'parent'."""
-        if log_id is None:
-            return
-        db = self._get_system_db()
-        try:
-            with db.create_session() as session:
-                record = session.get(FunctionLog, log_id)
-                if record is not None and str(record.log_role) != "parent":
-                    record.log_role = "parent"  # type: ignore[assignment]
-                    session.commit()
-        except Exception:
-            logger.exception("Failed to update parent log_role", log_id=log_id)
-
 
 def _finalize_fun_watch(
     *,
-    invocation_context: FunWatchContext,
+    aggregate_context: FunWatchContext,
     registry: FunWatchRegistry,
-    start_time: datetime,
+    invocation_start_time: datetime,
     exc_occurred: bool,
-    caught_error_type: str | None,
-    caught_error_message: str | None,
     log_lifecycle: bool,
     effective_log_level: int,
     app_logger: Any,
@@ -541,32 +613,36 @@ def _finalize_fun_watch(
     prev_function_id: Any,
     prev_call_chain: Any,
     prev_thread_id: Any,
+    prev_function_name: Any,
     context_token: Token[FunWatchContext | None],
 ) -> None:
     """Shared finalization logic for sync and async @fun_watch wrappers."""
     try:
-        solved, failed = invocation_context.snapshot()
-        item_error_count, item_error_types_json, item_error_samples_json = (
-            invocation_context.error_snapshot()
-        )
         end_time = datetime.now(UTC)
-        duration_s = (end_time - start_time).total_seconds()
+        duration_ms = (end_time - invocation_start_time).total_seconds() * 1000.0
+        aggregate_context.record_invocation_duration(duration_ms)
+
+        solved, failed = aggregate_context.snapshot()
+        total_elapsed_ms, average_elapsed_ms, median_elapsed_ms, min_elapsed_ms, max_elapsed_ms = (
+            aggregate_context.timing_snapshot()
+        )
         registry.complete_function_log(
-            log_id=invocation_context.log_id,
+            log_id=aggregate_context.log_id,
             solved=solved,
             failed=failed,
-            start_time=start_time,
+            call_count=aggregate_context.call_count,
             end_time=end_time,
+            total_elapsed_ms=total_elapsed_ms,
+            average_elapsed_ms=average_elapsed_ms,
+            median_elapsed_ms=median_elapsed_ms,
+            min_elapsed_ms=min_elapsed_ms,
+            max_elapsed_ms=max_elapsed_ms,
             exc_occurred=exc_occurred,
-            error_type=caught_error_type,
-            error_message=caught_error_message,
-            item_error_count=item_error_count,
-            item_error_types_json=item_error_types_json,
-            item_error_samples_json=item_error_samples_json,
-            task_size=invocation_context.task_size,
+            task_size=aggregate_context.task_size,
         )
         registry.update_last_seen(function_id)
         if not exc_occurred and log_lifecycle:
+            duration_s = duration_ms / 1000.0
             app_logger.log(
                 effective_log_level,
                 "Function completed",
@@ -578,9 +654,10 @@ def _finalize_fun_watch(
                 failed=failed,
                 processed_count=solved + failed,
                 is_success=failed == 0,
-                task_size=invocation_context.task_size,
+                task_size=aggregate_context.task_size,
+                call_count=aggregate_context.call_count,
                 duration_s=duration_s,
-                log_id=invocation_context.log_id,
+                log_id=aggregate_context.log_id,
                 module_name=caller_module_name,
                 module_path=filepath,
                 lineno=func_lineno,
@@ -599,6 +676,10 @@ def _finalize_fun_watch(
             structlog.contextvars.bind_contextvars(thread_id=prev_thread_id)
         else:
             structlog.contextvars.unbind_contextvars("thread_id")
+        if prev_function_name is not None:
+            structlog.contextvars.bind_contextvars(function_name=prev_function_name)
+        else:
+            structlog.contextvars.unbind_contextvars("function_name")
         registry.unbind_context(context_token)
 
 
@@ -607,9 +688,9 @@ class _FunWatchSetupResult:
     """Holds all computed state from the shared setup phase of @fun_watch."""
 
     registry: FunWatchRegistry
-    invocation_context: FunWatchContext
+    aggregate_context: FunWatchContext
     context_token: Token[FunWatchContext | None]
-    start_time: datetime
+    invocation_start_time: datetime
     function_name: str = ""
     function_id: str = ""
     app_id: str = ""
@@ -623,6 +704,7 @@ class _FunWatchSetupResult:
     prev_function_id: Any = None
     prev_call_chain: Any = None
     prev_thread_id: Any = None
+    prev_function_name: Any = None
 
 
 def _setup_fun_watch_invocation(
@@ -636,9 +718,9 @@ def _setup_fun_watch_invocation(
 ) -> _FunWatchSetupResult:
     """Shared setup logic for sync and async @fun_watch wrappers.
 
-    Performs function registration, context binding, structlog context
-    management, and lifecycle logging. Returns all state needed by the
-    caller to invoke the decorated function and finalize.
+    Performs function registration, aggregate context retrieval/creation,
+    structlog context management, and lifecycle logging.  Returns all state
+    needed by the caller to invoke the decorated function and finalize.
     """
     registry = FunWatchRegistry.instance()
 
@@ -681,18 +763,30 @@ def _setup_fun_watch_invocation(
     if task_size_detect and args and hasattr(args[0], "__len__"):
         detected_task_size = len(args[0])
 
-    invocation_context = FunWatchContext(task_size=detected_task_size)
     registry.ensure_context_proxy(instance)
 
-    parent_log_id = registry.get_parent_log_id()
-    log_role = "child" if parent_log_id is not None else "single"
+    thread_id = threading.get_ident()
+    invocation_start_time = datetime.now(UTC)
 
-    context_token = registry.bind_context(invocation_context)
+    aggregate_context = registry.get_or_create_aggregate_context(
+        function_id,
+        runtime_id,
+        main_app=main_app,
+        app_id=app_id,
+        start_time=invocation_start_time,
+    )
+    aggregate_context.increment_call_count()
+
+    if detected_task_size is not None:
+        aggregate_context.task_size = detected_task_size
+
+    context_token = registry.bind_context(aggregate_context)
 
     previous_structlog_context = structlog.contextvars.get_contextvars()
     prev_function_id = previous_structlog_context.get("function_id")
     prev_call_chain = previous_structlog_context.get("call_chain")
     prev_thread_id = previous_structlog_context.get("thread_id")
+    prev_function_name = previous_structlog_context.get("function_name")
     if prev_call_chain:
         current_call_chain = f"{prev_call_chain} -> {chain_label}"
     else:
@@ -701,28 +795,10 @@ def _setup_fun_watch_invocation(
             current_call_chain = f"{root_caller} -> {chain_label}"
         else:
             current_call_chain = chain_label
-    thread_id = threading.get_ident()
     structlog.contextvars.bind_contextvars(
         function_id=function_id, call_chain=current_call_chain, thread_id=thread_id,
+        function_name=chain_label,
     )
-    execution_order, thread_execution_order = registry.next_execution_order(runtime_id, thread_id)
-    start_time = datetime.now(UTC)
-
-    invocation_context.log_id = registry.start_function_log(
-        function_hash=function_id,
-        execution_order=execution_order,
-        thread_execution_order=thread_execution_order,
-        main_app=main_app,
-        app_id=app_id,
-        thread_id=thread_id,
-        task_size=invocation_context.task_size,
-        start_time=start_time,
-        runtime_id=runtime_id,
-        parent_log_id=parent_log_id,
-        log_role=log_role,
-    )
-    if parent_log_id is not None:
-        registry.update_parent_log_role(parent_log_id)
 
     effective_log_level = log_level if log_level is not None else registry.default_lifecycle_log_level
     app_logger: Any = getattr(instance, "logger", logger)
@@ -737,9 +813,9 @@ def _setup_fun_watch_invocation(
             function_id=function_id,
             app_id=app_id,
             runtime=runtime_id,
-            log_id=invocation_context.log_id,
-            execution_order=execution_order,
-            log_role=log_role,
+            log_id=aggregate_context.log_id,
+            call_count=aggregate_context.call_count,
+            log_role="function",
             module_name=caller_module_name,
             module_path=filepath,
             lineno=func_lineno,
@@ -749,9 +825,9 @@ def _setup_fun_watch_invocation(
 
     return _FunWatchSetupResult(
         registry=registry,
-        invocation_context=invocation_context,
+        aggregate_context=aggregate_context,
         context_token=context_token,
-        start_time=start_time,
+        invocation_start_time=invocation_start_time,
         function_name=function_name,
         function_id=function_id,
         app_id=app_id,
@@ -765,6 +841,7 @@ def _setup_fun_watch_invocation(
         prev_function_id=prev_function_id,
         prev_call_chain=prev_call_chain,
         prev_thread_id=prev_thread_id,
+        prev_function_name=prev_function_name,
     )
 
 
@@ -775,7 +852,7 @@ def fun_watch(
     log_lifecycle: bool = True,
     log_level: int | None = None,
 ) -> Any:
-    """Decorator that monitors function execution and records metrics to DB.
+    """Decorator that monitors function execution and records aggregate metrics to DB.
 
     Supports both bare ``@fun_watch`` and parameterized ``@fun_watch(...)`` usage.
 
@@ -808,27 +885,23 @@ def fun_watch(
             )
 
             exc_occurred = False
-            caught_error_type: str | None = None
-            caught_error_message: str | None = None
             try:
                 result = decorated_func(self, *args, **kwargs)
             except Exception as exc:
                 exc_occurred = True
-                caught_error_type = type(exc).__name__
-                caught_error_message = str(exc)
-                _solved, _failed = setup.invocation_context.snapshot()
+                _solved, _failed = setup.aggregate_context.snapshot()
                 setup.app_logger.exception(
                     "Unhandled exception in @fun_watch decorated function",
                     function_name=setup.function_name,
                     function_id=setup.function_id,
                     app_id=setup.app_id,
                     runtime=setup.runtime_id,
-                    error_type=caught_error_type,
-                    error_message=caught_error_message,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
                     solved=_solved,
                     failed=_failed,
                     is_success=False,
-                    log_id=setup.invocation_context.log_id,
+                    log_id=setup.aggregate_context.log_id,
                     module_name=setup.caller_module_name,
                     module_path=setup.filepath,
                     lineno=setup.func_lineno,
@@ -837,12 +910,10 @@ def fun_watch(
                 raise
             finally:
                 _finalize_fun_watch(
-                    invocation_context=setup.invocation_context,
+                    aggregate_context=setup.aggregate_context,
                     registry=setup.registry,
-                    start_time=setup.start_time,
+                    invocation_start_time=setup.invocation_start_time,
                     exc_occurred=exc_occurred,
-                    caught_error_type=caught_error_type,
-                    caught_error_message=caught_error_message,
                     log_lifecycle=log_lifecycle,
                     effective_log_level=setup.effective_log_level,
                     app_logger=setup.app_logger,
@@ -857,6 +928,7 @@ def fun_watch(
                     prev_function_id=setup.prev_function_id,
                     prev_call_chain=setup.prev_call_chain,
                     prev_thread_id=setup.prev_thread_id,
+                    prev_function_name=setup.prev_function_name,
                     context_token=setup.context_token,
                 )
 
@@ -870,27 +942,23 @@ def fun_watch(
             )
 
             exc_occurred = False
-            caught_error_type: str | None = None
-            caught_error_message: str | None = None
             try:
                 result = await decorated_func(self, *args, **kwargs)
             except Exception as exc:
                 exc_occurred = True
-                caught_error_type = type(exc).__name__
-                caught_error_message = str(exc)
-                _solved, _failed = setup.invocation_context.snapshot()
+                _solved, _failed = setup.aggregate_context.snapshot()
                 setup.app_logger.exception(
                     "Unhandled exception in @fun_watch decorated function",
                     function_name=setup.function_name,
                     function_id=setup.function_id,
                     app_id=setup.app_id,
                     runtime=setup.runtime_id,
-                    error_type=caught_error_type,
-                    error_message=caught_error_message,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
                     solved=_solved,
                     failed=_failed,
                     is_success=False,
-                    log_id=setup.invocation_context.log_id,
+                    log_id=setup.aggregate_context.log_id,
                     module_name=setup.caller_module_name,
                     module_path=setup.filepath,
                     lineno=setup.func_lineno,
@@ -899,12 +967,10 @@ def fun_watch(
                 raise
             finally:
                 _finalize_fun_watch(
-                    invocation_context=setup.invocation_context,
+                    aggregate_context=setup.aggregate_context,
                     registry=setup.registry,
-                    start_time=setup.start_time,
+                    invocation_start_time=setup.invocation_start_time,
                     exc_occurred=exc_occurred,
-                    caught_error_type=caught_error_type,
-                    caught_error_message=caught_error_message,
                     log_lifecycle=log_lifecycle,
                     effective_log_level=setup.effective_log_level,
                     app_logger=setup.app_logger,
@@ -919,6 +985,7 @@ def fun_watch(
                     prev_function_id=setup.prev_function_id,
                     prev_call_chain=setup.prev_call_chain,
                     prev_thread_id=setup.prev_thread_id,
+                    prev_function_name=setup.prev_function_name,
                     context_token=setup.context_token,
                 )
 

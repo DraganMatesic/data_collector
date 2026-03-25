@@ -102,21 +102,15 @@ class AbortHttp(BaseScraper):
             response = self.request.get(url)
             if response is None:
                 print(f"  FAILED (connection): {url}")
-                self.increment_failed(
-                    error_category=self.request.get_error_category(),
-                    error_type="ConnectionError",
-                    error_message=f"{url}: connection failed",
-                )
+                self.logger.error(f"Connection failed: {url}")
+                self.increment_failed(error_category=self.request.get_error_category())
                 self.update_progress()
                 continue
 
             if response.status_code < 200 or response.status_code >= 300:
                 print(f"  FAILED (HTTP {response.status_code}): {url}")
-                self.increment_failed(
-                    error_category=ErrorCategory.HTTP,
-                    error_type=f"HTTP_{response.status_code}",
-                    error_message=f"{url}: HTTP {response.status_code}",
-                )
+                self.logger.error(f"HTTP {response.status_code}: {url}")
+                self.increment_failed(error_category=ErrorCategory.HTTP)
                 self.update_progress()
                 continue
 

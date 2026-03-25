@@ -11,11 +11,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from typing import Any
 
 from data_collector.scraping.base import BaseScraper, CategoryThreshold
 from data_collector.utilities.database.main import Database
-from data_collector.utilities.fun_watch import FunWatchRegistry
+from data_collector.utilities.fun_watch import FunWatchContext, FunWatchRegistry
 from data_collector.utilities.request import Request, RequestMetrics
 
 
@@ -69,13 +70,14 @@ class ThreadedScraper(BaseScraper):
     ) -> None:
         """Execute worker callable for each item using a ThreadPoolExecutor.
 
-        Propagates FunWatchContext to worker threads when an active context
-        exists. Checks ``_abort_event`` after each completed future and
-        cancels pending futures when a fatal threshold is breached.
+        Registers the worker callback in AppFunctions and creates an aggregate
+        FunctionLog row with ``log_role='thread'``.  Worker threads bind the
+        thread context (not the parent) so that ``increment_solved()`` /
+        ``increment_failed()`` update the thread's FunctionLog row.  Errors
+        logged inside workers carry the thread's ``function_id`` in structlog.
 
-        Workers should check ``self.should_abort`` before expensive
-        operations (HTTP requests, captcha solves) for cooperative
-        cancellation of in-flight work.
+        After all workers complete, solved/failed counters are propagated back
+        to the caller's (parent) aggregate context.
 
         Args:
             items: Work items to process in parallel.
@@ -85,14 +87,28 @@ class ThreadedScraper(BaseScraper):
         """
         effective_workers = max_workers if max_workers is not None else self.max_workers
         registry = FunWatchRegistry.instance()
-        has_context = registry.try_get_active_context() is not None
+        parent_context = registry.try_get_active_context()
+
+        thread_context: FunWatchContext | None = None
+        thread_function_hash: str | None = None
+        if parent_context is not None:
+            thread_context, thread_function_hash = registry.register_thread(
+                worker, self.app_id, self.runtime,
+                main_app=getattr(self, "main_app", None),
+                caller_log_id=parent_context.log_id,
+            )
+            thread_context.task_size = len(items)
 
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            wrapped_worker = (
+                registry.wrap_with_thread_context(
+                    worker, thread_context, thread_function_hash, application_logger=self.logger,
+                )
+                if thread_context is not None and thread_function_hash is not None
+                else worker
+            )
             futures = {
-                executor.submit(
-                    registry.wrap_with_active_context(worker) if has_context else worker,
-                    item, idx,
-                ): item
+                executor.submit(wrapped_worker, item, idx): item
                 for idx, item in enumerate(items)
             }
             for future in as_completed(futures):
@@ -102,10 +118,33 @@ class ThreadedScraper(BaseScraper):
                 try:
                     future.result()
                 except Exception:
-                    self.logger.exception("Worker exception for item %s", futures[future])
-                    self.increment_failed()
+                    with self._progress_lock:
+                        self.failed += 1
+                        self._consecutive_failures += 1
+                    self._check_failure_threshold()
                 if track_progress:
                     self.update_progress()
+
+        if thread_context is not None:
+            solved, failed = thread_context.snapshot()
+            if parent_context is not None:
+                parent_context.mark_solved(solved)
+                if failed > 0:
+                    parent_context.mark_failed(failed)
+            timing = thread_context.timing_snapshot()
+            registry.complete_function_log(
+                log_id=thread_context.log_id,
+                solved=solved,
+                failed=failed,
+                call_count=len(items),
+                end_time=datetime.now(UTC),
+                total_elapsed_ms=timing[0],
+                average_elapsed_ms=timing[1],
+                median_elapsed_ms=timing[2],
+                min_elapsed_ms=timing[3],
+                max_elapsed_ms=timing[4],
+                task_size=thread_context.task_size,
+            )
 
     def create_worker_request(self) -> Request:
         """Create a Request instance for a worker thread.

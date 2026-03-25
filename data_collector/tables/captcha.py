@@ -3,7 +3,7 @@
 CaptchaLog records every captcha task submitted to a provider, tracking
 cost, timing, status, and correctness feedback. CaptchaLogError stores
 provider error details (error code, description, category) in a separate
-one-to-one table, following the FunctionLog/FunctionLogError split pattern.
+one-to-one table, following the CaptchaLog/CaptchaLogError split pattern.
 
 These are operational log tables -- they do not follow DataTableMixin
 (no sha, archive, date_modified columns).
@@ -96,7 +96,7 @@ class CaptchaLogError(Base):
     returns an error (status FAILED or TIMED_OUT). Successful solves have
     no CaptchaLogError record.
 
-    Follows the FunctionLog/FunctionLogError split pattern
+    Follows the CaptchaLog/CaptchaLogError split pattern
     (``data_collector.tables.log``).
     """
 
